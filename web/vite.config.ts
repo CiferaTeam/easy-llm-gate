@@ -7,6 +7,7 @@ export default defineConfig({
     port: 16891,
     proxy: {
       "/api": "http://localhost:16890",
+      "/v1": "http://localhost:16890",
     },
   },
   build: {
