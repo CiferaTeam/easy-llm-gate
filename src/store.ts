@@ -325,8 +325,30 @@ export async function deleteGateKey(id: string): Promise<boolean> {
   return true;
 }
 
-// ── Proxy Helper ──
+// ── Proxy Helpers ──
 
+export async function authenticateGateKey(apiKey: string): Promise<GateKey | null> {
+  const h = await redis.hgetall(`gate_key:${apiKey}`);
+  if (!h || !h.id || h.enabled !== "true") return null;
+  return parseGateKey(h);
+}
+
+export async function findUpstreamForGateKey(
+  gateKey: GateKey,
+  providerType?: Provider["type"]
+): Promise<{ key: UpstreamKey; provider: Provider } | null> {
+  for (const ukId of gateKey.upstream_key_ids) {
+    const kh = await redis.hgetall(`upstream_key:${ukId}`);
+    if (!kh || !kh.id || kh.enabled !== "true") continue;
+    const provider = await getProvider(kh.provider_id);
+    if (!provider) continue;
+    if (providerType && provider.type !== providerType) continue;
+    return { key: parseUpstreamKey(kh), provider };
+  }
+  return null;
+}
+
+// Legacy: find any available key (no gate key auth)
 export async function findKeyForProxy(providerType?: Provider["type"]): Promise<{
   key: UpstreamKey;
   provider: Provider;
