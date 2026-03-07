@@ -22,7 +22,6 @@ const gateKeys = db.prepare("SELECT * FROM gate_keys").all();
 console.table(gateKeys.map((r: any) => ({
   id: r.id,
   name: r.name,
-  format: r.format,
   upstream_key_ids: r.upstream_key_ids,
   enabled: r.enabled,
 })));

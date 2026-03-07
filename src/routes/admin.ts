@@ -170,7 +170,6 @@ admin.post("/gate-keys", async (c) => {
   }
   const gk = await addGateKey({
     name: body.name,
-    format: body.format,
     upstream_key_ids: body.upstream_key_ids,
   });
   return c.json(gk, 201);

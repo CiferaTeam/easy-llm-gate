@@ -44,7 +44,6 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS gate_keys (
     id               TEXT PRIMARY KEY,
     name             TEXT NOT NULL,
-    format           TEXT NOT NULL DEFAULT 'openai',
     upstream_key_ids TEXT NOT NULL DEFAULT '[]',
     enabled          INTEGER NOT NULL DEFAULT 1,
     created_at       INTEGER NOT NULL DEFAULT 0

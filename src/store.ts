@@ -27,7 +27,6 @@ export interface UpstreamKey {
 export interface GateKey {
   id: string;
   name: string;
-  format: "openai" | "anthropic";
   upstream_key_ids: string[];
   enabled: boolean;
   created_at: number;
@@ -88,7 +87,6 @@ function rowToGateKey(row: any): GateKey {
   return {
     id: row.id,
     name: row.name,
-    format: row.format as GateKey["format"],
     upstream_key_ids: JSON.parse(row.upstream_key_ids || "[]"),
     enabled: row.enabled === 1,
     created_at: row.created_at,
@@ -122,7 +120,7 @@ const stmts = {
   allGateKeys: db.prepare("SELECT * FROM gate_keys"),
   getGateKey: db.prepare("SELECT * FROM gate_keys WHERE id = ?"),
   insertGateKey: db.prepare(
-    "INSERT INTO gate_keys (id, name, format, upstream_key_ids, enabled, created_at) VALUES (@id, @name, @format, @upstream_key_ids, @enabled, @created_at)"
+    "INSERT INTO gate_keys (id, name, upstream_key_ids, enabled, created_at) VALUES (@id, @name, @upstream_key_ids, @enabled, @created_at)"
   ),
   deleteGateKey: db.prepare("DELETE FROM gate_keys WHERE id = ?"),
   updateGateKeyUpstreamIds: db.prepare(
@@ -311,13 +309,11 @@ export async function getGateKey(id: string): Promise<GateKey | undefined> {
 
 export async function addGateKey(data: {
   name: string;
-  format?: GateKey["format"];
   upstream_key_ids?: string[];
 }): Promise<GateKey> {
   const gk: GateKey = {
     id: `gk_${Date.now().toString(36)}_${(++idCounter).toString(36)}`,
     name: data.name,
-    format: data.format ?? "openai",
     upstream_key_ids: data.upstream_key_ids ?? [],
     enabled: true,
     created_at: Date.now(),
@@ -325,7 +321,6 @@ export async function addGateKey(data: {
   stmts.insertGateKey.run({
     id: gk.id,
     name: gk.name,
-    format: gk.format,
     upstream_key_ids: JSON.stringify(gk.upstream_key_ids),
     enabled: 1,
     created_at: gk.created_at,

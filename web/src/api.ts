@@ -30,7 +30,6 @@ export interface UpstreamKey {
 export interface GateKey {
   id: string;
   name: string;
-  format: "openai" | "anthropic";
   upstream_key_ids: string[];
   enabled: boolean;
   created_at: number;
@@ -121,7 +120,6 @@ export async function fetchGateKeys(): Promise<GateKey[]> {
 
 export async function createGateKey(data: {
   name: string;
-  format?: string;
   upstream_key_ids?: string[];
 }): Promise<GateKey> {
   const r = await fetch("/api/gate-keys", {

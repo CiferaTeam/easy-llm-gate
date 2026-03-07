@@ -133,7 +133,6 @@ export function App() {
 
   // Gate Key form
   const [gkName, setGkName] = useState("");
-  const [gkFormat, setGkFormat] = useState<"openai" | "anthropic">("openai");
   const [gkSelectedKeys, setGkSelectedKeys] = useState<string[]>([]);
 
   // Test states per key
@@ -314,11 +313,9 @@ export function App() {
     if (!gkName) return;
     await createGateKey({
       name: gkName,
-      format: gkFormat,
       upstream_key_ids: gkSelectedKeys,
     });
     setGkName("");
-    setGkFormat("openai");
     setGkSelectedKeys([]);
     reload();
   };
@@ -334,6 +331,20 @@ export function App() {
       prev.includes(ukId) ? prev.filter((k) => k !== ukId) : [...prev, ukId]
     );
   };
+
+  // Check that all selected upstream keys share the same provider type
+  const gkFormatError = (() => {
+    if (gkSelectedKeys.length < 2) return "";
+    const types = new Set(
+      gkSelectedKeys.map((ukId) => {
+        const uk = keys.find((k) => k.id === ukId);
+        if (!uk) return null;
+        return providers.find((p) => p.id === uk.provider_id)?.type ?? null;
+      })
+    );
+    types.delete(null);
+    return types.size > 1 ? "所选上游 Key 的服务商格式不一致（混合了 OpenAI 和 Anthropic 类型）" : "";
+  })();
 
   const upstreamKeyLabel = (ukId: string) => {
     const uk = keys.find((k) => k.id === ukId);
@@ -655,7 +666,6 @@ export function App() {
                 <thead>
                   <tr>
                     <th>名称</th>
-                    <th>兼容格式</th>
                     <th>Key ID</th>
                     <th>关联上游 Key</th>
                     <th>操作</th>
@@ -665,11 +675,6 @@ export function App() {
                   {gateKeys.map((gk) => (
                     <tr key={gk.id}>
                       <td>{gk.name}</td>
-                      <td>
-                        <span className="badge badge-success">
-                          {gk.format === "openai" ? "OpenAI" : "Anthropic"}
-                        </span>
-                      </td>
                       <td>
                         <code style={{ fontSize: 12, cursor: "pointer" }} onClick={() => {
                           navigator.clipboard.writeText(gk.id);
@@ -705,20 +710,13 @@ export function App() {
           <div className="card">
             <h2>生成 Gate Key</h2>
             <div className="form-row">
-              <div className="form-group">
+              <div className="form-group" style={{ flex: 1 }}>
                 <label>名称</label>
                 <input
                   value={gkName}
                   onChange={(e) => setGkName(e.target.value)}
                   placeholder="如：OpenClaw 主进程"
                 />
-              </div>
-              <div className="form-group">
-                <label>兼容格式</label>
-                <select value={gkFormat} onChange={(e) => setGkFormat(e.target.value as "openai" | "anthropic")}>
-                  <option value="openai">OpenAI 兼容</option>
-                  <option value="anthropic">Anthropic 兼容</option>
-                </select>
               </div>
             </div>
             {keys.length > 0 && (
@@ -741,6 +739,9 @@ export function App() {
                     );
                   })}
                 </div>
+                {gkFormatError && (
+                  <p style={{ fontSize: 12, color: "var(--danger)", margin: "6px 0 0" }}>{gkFormatError}</p>
+                )}
               </div>
             )}
             {keys.length === 0 && (
@@ -752,7 +753,7 @@ export function App() {
               <button
                 className="btn-primary"
                 onClick={handleAddGateKey}
-                disabled={!gkName}
+                disabled={!gkName || !!gkFormatError}
               >
                 生成 Gate Key
               </button>
