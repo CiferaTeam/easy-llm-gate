@@ -1,4 +1,6 @@
-// In-memory storage for MVP (will migrate to Redis later)
+import { redis } from "./redis.js";
+
+// ── Interfaces ──
 
 export interface Provider {
   id: string;
@@ -19,8 +21,16 @@ export interface UpstreamKey {
   created_at: number;
 }
 
-const providers = new Map<string, Provider>();
-const upstreamKeys = new Map<string, UpstreamKey>();
+export interface GateKey {
+  id: string;
+  name: string;
+  format: "openai" | "anthropic";
+  upstream_key_ids: string[];
+  enabled: boolean;
+  created_at: number;
+}
+
+// ── Helpers ──
 
 let idCounter = 0;
 function generateId(prefix: string): string {
@@ -32,64 +42,135 @@ export function maskKey(key: string): string {
   return key.slice(0, 4) + "****" + key.slice(-4);
 }
 
+// Serialize/deserialize helpers for Redis Hash
+function toHash(obj: Record<string, any>): Record<string, string> {
+  const h: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    h[k] = typeof v === "object" ? JSON.stringify(v) : String(v);
+  }
+  return h;
+}
+
+function parseProvider(h: Record<string, string>): Provider {
+  return {
+    id: h.id,
+    name: h.name,
+    type: h.type as Provider["type"],
+    base_url: h.base_url,
+    created_at: Number(h.created_at),
+  };
+}
+
+function parseUpstreamKey(h: Record<string, string>): UpstreamKey {
+  return {
+    id: h.id,
+    provider_id: h.provider_id,
+    api_key: h.api_key,
+    alias: h.alias || "",
+    rpm_limit: Number(h.rpm_limit),
+    tpm_limit: Number(h.tpm_limit),
+    enabled: h.enabled === "true",
+    created_at: Number(h.created_at),
+  };
+}
+
+function parseGateKey(h: Record<string, string>): GateKey {
+  return {
+    id: h.id,
+    name: h.name,
+    format: h.format as GateKey["format"],
+    upstream_key_ids: JSON.parse(h.upstream_key_ids || "[]"),
+    enabled: h.enabled === "true",
+    created_at: Number(h.created_at),
+  };
+}
+
 // ── Provider CRUD ──
 
-export function getProviders(): Provider[] {
-  return Array.from(providers.values());
+export async function getProviders(): Promise<Provider[]> {
+  const ids = await redis.smembers("providers");
+  if (!ids.length) return [];
+  const pipe = redis.pipeline();
+  for (const id of ids) pipe.hgetall(`provider:${id}`);
+  const results = await pipe.exec();
+  return (results || [])
+    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseProvider(h as Record<string, string>)))
+    .filter(Boolean) as Provider[];
 }
 
-export function getProvider(id: string): Provider | undefined {
-  return providers.get(id);
+export async function getProvider(id: string): Promise<Provider | undefined> {
+  const h = await redis.hgetall(`provider:${id}`);
+  if (!h || !h.id) return undefined;
+  return parseProvider(h);
 }
 
-export function addProvider(data: {
+export async function addProvider(data: {
   name: string;
   type?: Provider["type"];
   base_url: string;
-}): Provider {
+}): Promise<Provider> {
   const p: Provider = {
     id: generateId("prov"),
     name: data.name,
     type: data.type ?? "openai",
-    base_url: data.base_url.replace(/\/+$/, ""), // trim trailing slash
+    base_url: data.base_url.replace(/\/+$/, ""),
     created_at: Date.now(),
   };
-  providers.set(p.id, p);
+  await redis.hset(`provider:${p.id}`, toHash(p as any));
+  await redis.sadd("providers", p.id);
   return p;
 }
 
-export function deleteProvider(id: string): boolean {
-  if (!providers.delete(id)) return false;
-  // cascade delete upstream keys
-  for (const [kid, k] of upstreamKeys) {
-    if (k.provider_id === id) upstreamKeys.delete(kid);
+export async function deleteProvider(id: string): Promise<boolean> {
+  const removed = await redis.srem("providers", id);
+  if (!removed) return false;
+  await redis.del(`provider:${id}`);
+  // cascade: delete upstream keys belonging to this provider
+  const ukIds = await redis.smembers(`provider_keys:${id}`);
+  for (const ukId of ukIds) {
+    await deleteUpstreamKey(ukId);
   }
+  await redis.del(`provider_keys:${id}`);
   return true;
 }
 
 // ── Upstream Key CRUD ──
 
-export function getUpstreamKeys(): UpstreamKey[] {
-  return Array.from(upstreamKeys.values());
+export async function getUpstreamKeys(): Promise<UpstreamKey[]> {
+  const ids = await redis.smembers("upstream_keys");
+  if (!ids.length) return [];
+  const pipe = redis.pipeline();
+  for (const id of ids) pipe.hgetall(`upstream_key:${id}`);
+  const results = await pipe.exec();
+  return (results || [])
+    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseUpstreamKey(h as Record<string, string>)))
+    .filter(Boolean) as UpstreamKey[];
 }
 
-export function getUpstreamKey(id: string): UpstreamKey | undefined {
-  return upstreamKeys.get(id);
+export async function getUpstreamKey(id: string): Promise<UpstreamKey | undefined> {
+  const h = await redis.hgetall(`upstream_key:${id}`);
+  if (!h || !h.id) return undefined;
+  return parseUpstreamKey(h);
 }
 
-export function getUpstreamKeysByProvider(providerId: string): UpstreamKey[] {
-  return Array.from(upstreamKeys.values()).filter(
-    (k) => k.provider_id === providerId
-  );
+export async function getUpstreamKeysByProvider(providerId: string): Promise<UpstreamKey[]> {
+  const ids = await redis.smembers(`provider_keys:${providerId}`);
+  if (!ids.length) return [];
+  const pipe = redis.pipeline();
+  for (const id of ids) pipe.hgetall(`upstream_key:${id}`);
+  const results = await pipe.exec();
+  return (results || [])
+    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseUpstreamKey(h as Record<string, string>)))
+    .filter(Boolean) as UpstreamKey[];
 }
 
-export function addUpstreamKey(data: {
+export async function addUpstreamKey(data: {
   provider_id: string;
   api_key: string;
   alias?: string;
   rpm_limit?: number;
   tpm_limit?: number;
-}): UpstreamKey {
+}): Promise<UpstreamKey> {
   const k: UpstreamKey = {
     id: generateId("uk"),
     provider_id: data.provider_id,
@@ -100,26 +181,90 @@ export function addUpstreamKey(data: {
     enabled: true,
     created_at: Date.now(),
   };
-  upstreamKeys.set(k.id, k);
+  await redis.hset(`upstream_key:${k.id}`, toHash(k as any));
+  await redis.sadd("upstream_keys", k.id);
+  await redis.sadd(`provider_keys:${k.provider_id}`, k.id);
   return k;
 }
 
-export function deleteUpstreamKey(id: string): boolean {
-  return upstreamKeys.delete(id);
+export async function deleteUpstreamKey(id: string): Promise<boolean> {
+  const h = await redis.hgetall(`upstream_key:${id}`);
+  if (!h || !h.id) return false;
+  await redis.srem("upstream_keys", id);
+  await redis.srem(`provider_keys:${h.provider_id}`, id);
+  await redis.del(`upstream_key:${id}`);
+  // cascade: remove from all gate keys
+  const gkIds = await redis.smembers("gate_keys");
+  for (const gkId of gkIds) {
+    const raw = await redis.hget(`gate_key:${gkId}`, "upstream_key_ids");
+    if (!raw) continue;
+    const arr: string[] = JSON.parse(raw);
+    if (arr.includes(id)) {
+      const updated = arr.filter((kid) => kid !== id);
+      await redis.hset(`gate_key:${gkId}`, "upstream_key_ids", JSON.stringify(updated));
+    }
+  }
+  return true;
 }
 
-// ── Helpers ──
+// ── Gate Key CRUD ──
 
-export function findKeyForProxy(providerType?: Provider["type"]): {
+export async function getGateKeys(): Promise<GateKey[]> {
+  const ids = await redis.smembers("gate_keys");
+  if (!ids.length) return [];
+  const pipe = redis.pipeline();
+  for (const id of ids) pipe.hgetall(`gate_key:${id}`);
+  const results = await pipe.exec();
+  return (results || [])
+    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseGateKey(h as Record<string, string>)))
+    .filter(Boolean) as GateKey[];
+}
+
+export async function getGateKey(id: string): Promise<GateKey | undefined> {
+  const h = await redis.hgetall(`gate_key:${id}`);
+  if (!h || !h.id) return undefined;
+  return parseGateKey(h);
+}
+
+export async function addGateKey(data: {
+  name: string;
+  format?: GateKey["format"];
+  upstream_key_ids?: string[];
+}): Promise<GateKey> {
+  const gk: GateKey = {
+    id: `gk_${Date.now().toString(36)}_${(++idCounter).toString(36)}`,
+    name: data.name,
+    format: data.format ?? "openai",
+    upstream_key_ids: data.upstream_key_ids ?? [],
+    enabled: true,
+    created_at: Date.now(),
+  };
+  await redis.hset(`gate_key:${gk.id}`, toHash(gk as any));
+  await redis.sadd("gate_keys", gk.id);
+  return gk;
+}
+
+export async function deleteGateKey(id: string): Promise<boolean> {
+  const removed = await redis.srem("gate_keys", id);
+  if (!removed) return false;
+  await redis.del(`gate_key:${id}`);
+  return true;
+}
+
+// ── Proxy Helper ──
+
+export async function findKeyForProxy(providerType?: Provider["type"]): Promise<{
   key: UpstreamKey;
   provider: Provider;
-} | null {
-  for (const k of upstreamKeys.values()) {
-    if (!k.enabled) continue;
-    const p = providers.get(k.provider_id);
-    if (!p) continue;
-    if (providerType && p.type !== providerType) continue;
-    return { key: k, provider: p };
+} | null> {
+  const ukIds = await redis.smembers("upstream_keys");
+  for (const ukId of ukIds) {
+    const kh = await redis.hgetall(`upstream_key:${ukId}`);
+    if (!kh || !kh.id || kh.enabled !== "true") continue;
+    const ph = await redis.hgetall(`provider:${kh.provider_id}`);
+    if (!ph || !ph.id) continue;
+    if (providerType && ph.type !== providerType) continue;
+    return { key: parseUpstreamKey(kh), provider: parseProvider(ph) };
   }
   return null;
 }

@@ -3,6 +3,7 @@ import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
 import { admin } from "./routes/admin.js";
 import { proxy } from "./routes/proxy.js";
+import "./redis.js"; // ensure Redis connects on startup
 
 const app = new Hono();
 

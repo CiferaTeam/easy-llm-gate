@@ -17,6 +17,15 @@ export interface UpstreamKey {
   created_at: number;
 }
 
+export interface GateKey {
+  id: string;
+  name: string;
+  format: "openai" | "anthropic";
+  upstream_key_ids: string[];
+  enabled: boolean;
+  created_at: number;
+}
+
 export async function fetchProviders(): Promise<Provider[]> {
   const r = await fetch("/api/providers");
   return r.json();
@@ -72,4 +81,30 @@ export async function testUpstreamKey(
 ): Promise<{ ok: boolean; error?: string; models?: any }> {
   const r = await fetch(`/api/upstream-keys/${id}/test`, { method: "POST" });
   return r.json();
+}
+
+// ── Gate Keys ──
+
+export async function fetchGateKeys(): Promise<GateKey[]> {
+  const r = await fetch("/api/gate-keys");
+  return r.json();
+}
+
+export async function createGateKey(data: {
+  name: string;
+  format?: string;
+  upstream_key_ids?: string[];
+}): Promise<GateKey> {
+  const r = await fetch("/api/gate-keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function deleteGateKey(id: string): Promise<void> {
+  const r = await fetch(`/api/gate-keys/${id}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
 }

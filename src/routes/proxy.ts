@@ -5,7 +5,7 @@ import { findKeyForProxy } from "../store.js";
 const proxy = new Hono();
 
 proxy.post("/chat/completions", async (c) => {
-  const match = findKeyForProxy();
+  const match = await findKeyForProxy();
   if (!match) {
     return c.json(
       { error: { message: "No upstream key available", type: "proxy_error" } },
@@ -74,7 +74,7 @@ proxy.post("/chat/completions", async (c) => {
 
 // ── Anthropic Messages API ──
 proxy.post("/messages", async (c) => {
-  const match = findKeyForProxy("anthropic");
+  const match = await findKeyForProxy("anthropic");
   if (!match) {
     return c.json(
       { type: "error", error: { type: "proxy_error", message: "No upstream anthropic key available" } },
@@ -137,7 +137,7 @@ proxy.post("/messages", async (c) => {
 });
 
 proxy.get("/models", async (c) => {
-  const match = findKeyForProxy();
+  const match = await findKeyForProxy();
   if (!match) {
     return c.json({ object: "list", data: [] });
   }
