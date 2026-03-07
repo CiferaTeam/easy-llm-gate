@@ -43,14 +43,29 @@ admin.post("/providers", async (c) => {
 
 admin.put("/providers/:id", async (c) => {
   const body = await c.req.json();
-  const updated = await updateProvider(c.req.param("id"), {
+  const id = c.req.param("id");
+  const existing = await getProvider(id);
+  if (!existing) return c.json({ error: "not found" }, 404);
+
+  // Builtin providers are immutable — create a user copy instead
+  if (existing.builtin) {
+    const newName = body.name ?? existing.name;
+    const copy = await addProvider({
+      name: newName === existing.name ? newName + " (副本)" : newName,
+      type: body.type ?? existing.type,
+      base_url: body.base_url ?? existing.base_url,
+      models: body.models ?? existing.models,
+    });
+    return c.json(copy, 201);
+  }
+
+  const updated = await updateProvider(id, {
     name: body.name,
     type: body.type,
     base_url: body.base_url,
     models: body.models,
   });
-  if (!updated) return c.json({ error: "not found" }, 404);
-  return c.json(updated);
+  return c.json(updated!);
 });
 
 admin.delete("/providers/:id", async (c) => {
@@ -119,6 +134,12 @@ admin.post("/upstream-keys/:id/test", async (c) => {
       if (!resp.ok) {
         const text = await resp.text();
         return c.json({ ok: false, status: resp.status, error: text });
+      }
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("text/event-stream")) {
+        // Some proxies always return SSE regardless of stream:false
+        const text = await resp.text();
+        return c.json({ ok: true, result: "连通正常 (SSE)" });
       }
       const data = await resp.json();
       return c.json({ ok: true, result: data });

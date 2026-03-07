@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   fetchProviders,
   fetchBuiltinProviders,
@@ -171,15 +171,19 @@ export function App() {
     reload();
   };
 
+  // Collect all known models from all providers for suggestion in add mode
+  const allModels = Array.from(
+    new Set(providers.flatMap((p) => p.models || []))
+  );
+
   const handleEditProvider = (p: Provider) => {
     setEditingProviderId(p.id);
     setProvName(p.name);
     setProvType(p.type as "openai" | "anthropic");
     setProvUrl(p.base_url);
     setProvModels(p.models || []);
-    // Find builtin models for suggestions
     const bp = builtinProvs.find((b) => b.id === p.id);
-    setAvailableModels(bp ? bp.models : p.models || []);
+    setAvailableModels(bp ? bp.models : allModels);
   };
 
   const handleSaveProvider = async () => {
@@ -348,131 +352,6 @@ export function App() {
 
       {tab === "providers" && (
         <>
-          {/* ── 已有服务商 ── */}
-          {providers.length > 0 && (
-            <div className="card">
-              <h2>已有服务商</h2>
-              <table>
-                <thead>
-                  <tr>
-                    <th>名称</th>
-                    <th>类型</th>
-                    <th>Base URL</th>
-                    <th>模型</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {providers.map((p) => (
-                    <tr key={p.id}>
-                      <td>
-                        {p.name}
-                        {p.builtin && <span className="badge badge-builtin" style={{ marginLeft: 6 }}>内置</span>}
-                      </td>
-                      <td>{p.type}</td>
-                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{p.base_url}</td>
-                      <td>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 3, maxWidth: 200 }}>
-                          {(p.models || []).slice(0, 3).map((m) => (
-                            <span key={m} className="badge badge-success" style={{ fontSize: 10 }}>{m}</span>
-                          ))}
-                          {(p.models || []).length > 3 && (
-                            <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
-                              +{p.models.length - 3}
-                            </span>
-                          )}
-                          {(!p.models || p.models.length === 0) && (
-                            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>-</span>
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="actions">
-                          <button className="btn-outline btn-sm" onClick={() => handleEditProvider(p)}>
-                            编辑
-                          </button>
-                          {!p.builtin && (
-                            <button className="btn-danger btn-sm" onClick={() => handleDeleteProvider(p.id)}>
-                              删除
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* ── 添加/编辑服务商 ── */}
-          <div className="card">
-            <h2>{editingProviderId ? "编辑服务商" : "添加服务商"}</h2>
-            <div className="form-row">
-              <div className="form-group">
-                <label>名称</label>
-                <input
-                  value={provName}
-                  onChange={(e) => setProvName(e.target.value)}
-                  placeholder="如：智谱 AI"
-                />
-              </div>
-              <div className="form-group">
-                <label>类型</label>
-                <select
-                  value={provType}
-                  onChange={(e) => {
-                    const t = e.target.value as "openai" | "anthropic";
-                    setProvType(t);
-                  }}
-                >
-                  <option value="openai">OpenAI 兼容</option>
-                  <option value="anthropic">Anthropic 兼容</option>
-                </select>
-              </div>
-              <div className="form-group" style={{ flex: 2 }}>
-                <label>Base URL</label>
-                <input
-                  value={provUrl}
-                  onChange={(e) => setProvUrl(e.target.value)}
-                  placeholder="https://api.example.com/v1"
-                />
-              </div>
-            </div>
-            <div className="form-group" style={{ marginBottom: 8 }}>
-              <label>模型列表</label>
-              <ModelSelector
-                models={availableModels}
-                selected={provModels}
-                onChange={setProvModels}
-              />
-            </div>
-            <div className="actions">
-              {editingProviderId ? (
-                <>
-                  <button
-                    className="btn-primary"
-                    onClick={handleSaveProvider}
-                    disabled={!provName || !provUrl}
-                  >
-                    保存
-                  </button>
-                  <button className="btn-outline" onClick={resetProvForm}>
-                    取消
-                  </button>
-                </>
-              ) : (
-                <button
-                  className="btn-primary"
-                  onClick={handleAddProvider}
-                  disabled={!provName || !provUrl}
-                >
-                  添加
-                </button>
-              )}
-            </div>
-          </div>
-
           {/* ── 已有 Key ── */}
           {keys.length > 0 && (
             <div className="card">
@@ -533,6 +412,171 @@ export function App() {
               </table>
             </div>
           )}
+
+          {/* ── 已有服务商 ── */}
+          {providers.length > 0 && (
+            <div className="card">
+              <h2>已有服务商</h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th>Base URL</th>
+                    <th>模型</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {providers.map((p) => (
+                    <React.Fragment key={p.id}>
+                      <tr>
+                        <td>
+                          {p.name}
+                          {p.builtin && <span className="badge badge-builtin" style={{ marginLeft: 6 }}>内置</span>}
+                        </td>
+                        <td>{p.type}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{p.base_url}</td>
+                        <td>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, maxWidth: 200 }}>
+                            {(p.models || []).slice(0, 3).map((m) => (
+                              <span key={m} className="badge badge-success" style={{ fontSize: 10 }}>{m}</span>
+                            ))}
+                            {(p.models || []).length > 3 && (
+                              <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                                +{p.models.length - 3}
+                              </span>
+                            )}
+                            {(!p.models || p.models.length === 0) && (
+                              <span style={{ fontSize: 11, color: "var(--text-dim)" }}>-</span>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          <div className="actions">
+                            <button
+                              className="btn-outline btn-sm"
+                              onClick={() => editingProviderId === p.id ? resetProvForm() : handleEditProvider(p)}
+                            >
+                              {editingProviderId === p.id ? "收起" : "编辑"}
+                            </button>
+                            {!p.builtin && (
+                              <button className="btn-danger btn-sm" onClick={() => handleDeleteProvider(p.id)}>
+                                删除
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {editingProviderId === p.id && (
+                        <tr>
+                          <td colSpan={5} style={{ padding: "12px 8px", background: "var(--bg)" }}>
+                            <div className="form-row">
+                              <div className="form-group">
+                                <label>名称</label>
+                                <input
+                                  value={provName}
+                                  onChange={(e) => setProvName(e.target.value)}
+                                />
+                              </div>
+                              <div className="form-group">
+                                <label>类型</label>
+                                <select
+                                  value={provType}
+                                  onChange={(e) => setProvType(e.target.value as "openai" | "anthropic")}
+                                >
+                                  <option value="openai">OpenAI 兼容</option>
+                                  <option value="anthropic">Anthropic 兼容</option>
+                                </select>
+                              </div>
+                              <div className="form-group" style={{ flex: 2 }}>
+                                <label>Base URL</label>
+                                <input
+                                  value={provUrl}
+                                  onChange={(e) => setProvUrl(e.target.value)}
+                                />
+                              </div>
+                            </div>
+                            <div className="form-group" style={{ marginBottom: 8 }}>
+                              <label>模型列表</label>
+                              <ModelSelector
+                                models={availableModels}
+                                selected={provModels}
+                                onChange={setProvModels}
+                              />
+                            </div>
+                            <div className="actions">
+                              <button
+                                className="btn-primary btn-sm"
+                                onClick={handleSaveProvider}
+                                disabled={!provName || !provUrl}
+                              >
+                                保存
+                              </button>
+                              <button className="btn-outline btn-sm" onClick={resetProvForm}>
+                                取消
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* ── 添加服务商 ── */}
+          <div className="card">
+            <h2>添加服务商</h2>
+            <div className="form-row">
+              <div className="form-group">
+                <label>名称</label>
+                <input
+                  value={editingProviderId ? "" : provName}
+                  onChange={(e) => { if (!editingProviderId) setProvName(e.target.value); }}
+                  onFocus={() => { if (editingProviderId) resetProvForm(); }}
+                  placeholder="如：智谱 AI"
+                />
+              </div>
+              <div className="form-group">
+                <label>类型</label>
+                <select
+                  value={editingProviderId ? "openai" : provType}
+                  onChange={(e) => { if (!editingProviderId) setProvType(e.target.value as "openai" | "anthropic"); }}
+                  onFocus={() => { if (editingProviderId) resetProvForm(); }}
+                >
+                  <option value="openai">OpenAI 兼容</option>
+                  <option value="anthropic">Anthropic 兼容</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ flex: 2 }}>
+                <label>Base URL</label>
+                <input
+                  value={editingProviderId ? "" : provUrl}
+                  onChange={(e) => { if (!editingProviderId) setProvUrl(e.target.value); }}
+                  onFocus={() => { if (editingProviderId) resetProvForm(); }}
+                  placeholder="https://api.example.com/v1"
+                />
+              </div>
+            </div>
+            <div className="form-group" style={{ marginBottom: 8 }}>
+              <label>模型列表</label>
+              <ModelSelector
+                models={allModels}
+                selected={editingProviderId ? [] : provModels}
+                onChange={(v) => { if (!editingProviderId) setProvModels(v); }}
+              />
+            </div>
+            <button
+              className="btn-primary"
+              onClick={handleAddProvider}
+              disabled={editingProviderId !== null || !provName || !provUrl}
+            >
+              添加
+            </button>
+          </div>
 
           {/* ── 添加 Key ── */}
           {providers.length > 0 && (
