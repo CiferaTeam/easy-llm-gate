@@ -77,6 +77,30 @@ admin.post("/upstream-keys/:id/test", async (c) => {
   if (!provider) return c.json({ error: "provider not found" }, 404);
 
   try {
+    if (provider.type === "anthropic") {
+      // Anthropic-compatible: send a minimal messages request
+      const resp = await fetch(`${provider.base_url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key.api_key,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "MiniMax-M1",
+          max_tokens: 16,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        return c.json({ ok: false, status: resp.status, error: text });
+      }
+      const data = await resp.json();
+      return c.json({ ok: true, result: data });
+    }
+
+    // OpenAI-compatible: fetch models list
     const resp = await fetch(`${provider.base_url}/models`, {
       headers: { Authorization: `Bearer ${key.api_key}` },
     });

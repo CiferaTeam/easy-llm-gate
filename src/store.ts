@@ -110,14 +110,16 @@ export function deleteUpstreamKey(id: string): boolean {
 
 // ── Helpers ──
 
-export function findKeyForProxy(): {
+export function findKeyForProxy(providerType?: Provider["type"]): {
   key: UpstreamKey;
   provider: Provider;
 } | null {
   for (const k of upstreamKeys.values()) {
     if (!k.enabled) continue;
     const p = providers.get(k.provider_id);
-    if (p) return { key: k, provider: p };
+    if (!p) continue;
+    if (providerType && p.type !== providerType) continue;
+    return { key: k, provider: p };
   }
   return null;
 }

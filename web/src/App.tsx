@@ -17,6 +17,7 @@ export function App() {
 
   // Provider form
   const [provName, setProvName] = useState("");
+  const [provType, setProvType] = useState<"openai" | "anthropic">("openai");
   const [provUrl, setProvUrl] = useState("https://open.bigmodel.cn/api/paas/v4");
 
   // Key form
@@ -43,8 +44,10 @@ export function App() {
 
   const handleAddProvider = async () => {
     if (!provName || !provUrl) return;
-    await createProvider({ name: provName, type: "openai", base_url: provUrl });
+    await createProvider({ name: provName, type: provType, base_url: provUrl });
     setProvName("");
+    setProvType("openai");
+    setProvUrl("https://open.bigmodel.cn/api/paas/v4");
     reload();
   };
 
@@ -91,21 +94,37 @@ export function App() {
   };
 
   const handleProxyTest = async (id: string) => {
-    // Find the key's provider to pick a model
     const key = keys.find((k) => k.id === id);
     if (!key) return;
+    const prov = providers.find((p) => p.id === key.provider_id);
+    if (!prov) return;
     setTestState((s) => ({ ...s, [id]: { loading: true } }));
 
     try {
-      const resp = await fetch("/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "glm-4-flash",
-          messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
-          stream: false,
-        }),
-      });
+      let resp: Response;
+
+      if (prov.type === "anthropic") {
+        resp = await fetch("/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "MiniMax-M1",
+            max_tokens: 64,
+            messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
+            stream: false,
+          }),
+        });
+      } else {
+        resp = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "glm-4-flash",
+            messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
+            stream: false,
+          }),
+        });
+      }
 
       if (!resp.ok) {
         const err = await resp.text();
@@ -117,7 +136,11 @@ export function App() {
       }
 
       const data = await resp.json();
-      const content = data.choices?.[0]?.message?.content ?? JSON.stringify(data);
+      // Anthropic format: data.content[0].text; OpenAI format: data.choices[0].message.content
+      const content =
+        data.content?.[0]?.text ??
+        data.choices?.[0]?.message?.content ??
+        JSON.stringify(data);
       setTestState((s) => ({
         ...s,
         [id]: { loading: false, ok: true, result: content },
@@ -148,6 +171,24 @@ export function App() {
               onChange={(e) => setProvName(e.target.value)}
               placeholder="如：智谱 AI"
             />
+          </div>
+          <div className="form-group">
+            <label>类型</label>
+            <select
+              value={provType}
+              onChange={(e) => {
+                const t = e.target.value as "openai" | "anthropic";
+                setProvType(t);
+                if (t === "anthropic") {
+                  setProvUrl("https://api.minimaxi.com/anthropic");
+                } else {
+                  setProvUrl("https://open.bigmodel.cn/api/paas/v4");
+                }
+              }}
+            >
+              <option value="openai">OpenAI 兼容</option>
+              <option value="anthropic">Anthropic 兼容</option>
+            </select>
           </div>
           <div className="form-group" style={{ flex: 2 }}>
             <label>Base URL</label>
