@@ -3,7 +3,17 @@ export interface Provider {
   name: string;
   type: string;
   base_url: string;
+  models: string[];
+  builtin: boolean;
   created_at: number;
+}
+
+export interface BuiltinProvider {
+  id: string;
+  name: string;
+  type: "openai" | "anthropic";
+  base_url: string;
+  models: string[];
 }
 
 export interface UpstreamKey {
@@ -26,6 +36,11 @@ export interface GateKey {
   created_at: number;
 }
 
+export async function fetchBuiltinProviders(): Promise<BuiltinProvider[]> {
+  const r = await fetch("/api/builtin-providers");
+  return r.json();
+}
+
 export async function fetchProviders(): Promise<Provider[]> {
   const r = await fetch("/api/providers");
   return r.json();
@@ -35,9 +50,23 @@ export async function createProvider(data: {
   name: string;
   type?: string;
   base_url: string;
+  models?: string[];
 }): Promise<Provider> {
   const r = await fetch("/api/providers", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function updateProvider(
+  id: string,
+  data: { name?: string; type?: string; base_url?: string; models?: string[] }
+): Promise<Provider> {
+  const r = await fetch(`/api/providers/${id}`, {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });

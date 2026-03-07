@@ -3,6 +3,7 @@ import {
   getProviders,
   getProvider,
   addProvider,
+  updateProvider,
   deleteProvider,
   getUpstreamKeys,
   getUpstreamKey,
@@ -13,11 +14,15 @@ import {
   deleteGateKey,
   maskKey,
 } from "../store.js";
+import { builtinProviders } from "../builtin-providers.js";
 
 const admin = new Hono();
 
 // ── Health ──
 admin.get("/health", (c) => c.json({ status: "ok", service: "admin" }));
+
+// ── Builtin Providers (for frontend preset selection) ──
+admin.get("/builtin-providers", (c) => c.json(builtinProviders));
 
 // ── Providers ──
 admin.get("/providers", async (c) => c.json(await getProviders()));
@@ -31,8 +36,21 @@ admin.post("/providers", async (c) => {
     name: body.name,
     type: body.type,
     base_url: body.base_url,
+    models: body.models,
   });
   return c.json(p, 201);
+});
+
+admin.put("/providers/:id", async (c) => {
+  const body = await c.req.json();
+  const updated = await updateProvider(c.req.param("id"), {
+    name: body.name,
+    type: body.type,
+    base_url: body.base_url,
+    models: body.models,
+  });
+  if (!updated) return c.json({ error: "not found" }, 404);
+  return c.json(updated);
 });
 
 admin.delete("/providers/:id", async (c) => {
@@ -80,6 +98,9 @@ admin.post("/upstream-keys/:id/test", async (c) => {
   if (!provider) return c.json({ error: "provider not found" }, 404);
 
   try {
+    // Pick a test model from the provider's model list
+    const testModel = provider.models?.[0] || (provider.type === "anthropic" ? "claude-3-5-haiku-20241022" : "gpt-3.5-turbo");
+
     if (provider.type === "anthropic") {
       const resp = await fetch(`${provider.base_url}/v1/messages`, {
         method: "POST",
@@ -89,9 +110,10 @@ admin.post("/upstream-keys/:id/test", async (c) => {
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: "MiniMax-M1",
+          model: testModel,
           max_tokens: 16,
           messages: [{ role: "user", content: "hi" }],
+          stream: false,
         }),
       });
       if (!resp.ok) {

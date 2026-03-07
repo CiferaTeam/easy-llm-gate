@@ -1,4 +1,5 @@
 import { redis } from "./redis.js";
+import { builtinProviders, getBuiltinProvider, type BuiltinProvider } from "./builtin-providers.js";
 
 // ── Interfaces ──
 
@@ -7,6 +8,8 @@ export interface Provider {
   name: string;
   type: "openai" | "anthropic" | "custom";
   base_url: string;
+  models: string[];
+  builtin: boolean; // true = originated from builtin registry
   created_at: number;
 }
 
@@ -57,7 +60,21 @@ function parseProvider(h: Record<string, string>): Provider {
     name: h.name,
     type: h.type as Provider["type"],
     base_url: h.base_url,
+    models: h.models ? JSON.parse(h.models) : [],
+    builtin: h.builtin === "true",
     created_at: Number(h.created_at),
+  };
+}
+
+function builtinToProvider(b: BuiltinProvider): Provider {
+  return {
+    id: b.id,
+    name: b.name,
+    type: b.type,
+    base_url: b.base_url,
+    models: b.models,
+    builtin: true,
+    created_at: 0,
   };
 }
 
@@ -88,37 +105,94 @@ function parseGateKey(h: Record<string, string>): GateKey {
 // ── Provider CRUD ──
 
 export async function getProviders(): Promise<Provider[]> {
+  // 1. Get all Redis providers
   const ids = await redis.smembers("providers");
-  if (!ids.length) return [];
-  const pipe = redis.pipeline();
-  for (const id of ids) pipe.hgetall(`provider:${id}`);
-  const results = await pipe.exec();
-  return (results || [])
-    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseProvider(h as Record<string, string>)))
-    .filter(Boolean) as Provider[];
+  let redisProviders: Provider[] = [];
+  if (ids.length) {
+    const pipe = redis.pipeline();
+    for (const id of ids) pipe.hgetall(`provider:${id}`);
+    const results = await pipe.exec();
+    redisProviders = (results || [])
+      .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseProvider(h as Record<string, string>)))
+      .filter(Boolean) as Provider[];
+  }
+
+  // 2. Merge: builtin providers that are NOT overridden in Redis come first
+  const redisIds = new Set(redisProviders.map((p) => p.id));
+  const merged: Provider[] = [];
+  for (const bp of builtinProviders) {
+    if (redisIds.has(bp.id)) {
+      // Redis override exists — use it but keep builtin flag
+      merged.push(redisProviders.find((p) => p.id === bp.id)!);
+    } else {
+      merged.push(builtinToProvider(bp));
+    }
+  }
+  // 3. Append user-created (non-builtin) providers
+  for (const rp of redisProviders) {
+    if (!builtinProviders.some((bp) => bp.id === rp.id)) {
+      merged.push(rp);
+    }
+  }
+  return merged;
 }
 
 export async function getProvider(id: string): Promise<Provider | undefined> {
   const h = await redis.hgetall(`provider:${id}`);
-  if (!h || !h.id) return undefined;
-  return parseProvider(h);
+  if (h && h.id) return parseProvider(h);
+  // Fallback to builtin
+  const bp = getBuiltinProvider(id);
+  return bp ? builtinToProvider(bp) : undefined;
 }
 
 export async function addProvider(data: {
   name: string;
   type?: Provider["type"];
   base_url: string;
+  models?: string[];
 }): Promise<Provider> {
   const p: Provider = {
     id: generateId("prov"),
     name: data.name,
     type: data.type ?? "openai",
     base_url: data.base_url.replace(/\/+$/, ""),
+    models: data.models ?? [],
+    builtin: false,
     created_at: Date.now(),
   };
   await redis.hset(`provider:${p.id}`, toHash(p as any));
   await redis.sadd("providers", p.id);
   return p;
+}
+
+export async function updateProvider(
+  id: string,
+  data: Partial<Pick<Provider, "name" | "type" | "base_url" | "models">>
+): Promise<Provider | undefined> {
+  // For builtin providers not yet in Redis, copy the builtin first
+  let existing = await getProvider(id);
+  if (!existing) return undefined;
+
+  const isInRedis = !!(await redis.hget(`provider:${id}`, "id"));
+  if (!isInRedis) {
+    // Copy builtin to Redis so we can override
+    const full: Provider = { ...existing, ...data, builtin: true };
+    await redis.hset(`provider:${id}`, toHash(full as any));
+    await redis.sadd("providers", id);
+    return full;
+  }
+
+  // Update existing Redis entry
+  const updates: Record<string, string> = {};
+  if (data.name !== undefined) updates.name = data.name;
+  if (data.type !== undefined) updates.type = data.type;
+  if (data.base_url !== undefined) updates.base_url = data.base_url.replace(/\/+$/, "");
+  if (data.models !== undefined) updates.models = JSON.stringify(data.models);
+
+  if (Object.keys(updates).length > 0) {
+    await redis.hset(`provider:${id}`, updates);
+  }
+  return getProvider(id);
 }
 
 export async function deleteProvider(id: string): Promise<boolean> {

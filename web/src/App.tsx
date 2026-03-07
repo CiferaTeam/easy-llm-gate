@@ -1,9 +1,11 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   fetchProviders,
+  fetchBuiltinProviders,
   fetchUpstreamKeys,
   fetchGateKeys,
   createProvider,
+  updateProvider,
   deleteProvider,
   createUpstreamKey,
   deleteUpstreamKey,
@@ -11,20 +13,116 @@ import {
   createGateKey,
   deleteGateKey,
   type Provider,
+  type BuiltinProvider,
   type UpstreamKey,
   type GateKey,
 } from "./api";
 
+// ── Model Multi-Select with Search ──
+function ModelSelector({
+  models,
+  selected,
+  onChange,
+}: {
+  models: string[];
+  selected: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const filtered = models.filter((m) =>
+    m.toLowerCase().includes(search.toLowerCase())
+  );
+
+  // Also allow typing a custom model not in the list
+  const toggle = (model: string) => {
+    onChange(
+      selected.includes(model)
+        ? selected.filter((m) => m !== model)
+        : [...selected, model]
+    );
+  };
+
+  const addCustom = () => {
+    const trimmed = search.trim();
+    if (trimmed && !selected.includes(trimmed)) {
+      onChange([...selected, trimmed]);
+    }
+    setSearch("");
+  };
+
+  return (
+    <div className="model-selector" ref={ref}>
+      <div className="model-selector-input" onClick={() => setOpen(true)}>
+        {selected.map((m) => (
+          <span key={m} className="model-tag">
+            {m}
+            <button onClick={(e) => { e.stopPropagation(); toggle(m); }}>&times;</button>
+          </span>
+        ))}
+        <input
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); addCustom(); }
+            if (e.key === "Backspace" && !search && selected.length) {
+              onChange(selected.slice(0, -1));
+            }
+          }}
+          placeholder={selected.length ? "" : "搜索或输入模型名..."}
+        />
+      </div>
+      {open && (filtered.length > 0 || search.trim()) && (
+        <div className="model-dropdown">
+          {filtered.map((m) => (
+            <div
+              key={m}
+              className={`model-option ${selected.includes(m) ? "selected" : ""}`}
+              onClick={() => toggle(m)}
+            >
+              <span className="check">{selected.includes(m) ? "✓" : ""}</span>
+              {m}
+            </div>
+          ))}
+          {search.trim() && !models.includes(search.trim()) && (
+            <div className="model-option" onClick={addCustom}>
+              <span className="check">+</span>
+              添加自定义: {search.trim()}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function App() {
   const [tab, setTab] = useState<"providers" | "gatekeys">("providers");
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [builtinProvs, setBuiltinProvs] = useState<BuiltinProvider[]>([]);
   const [keys, setKeys] = useState<UpstreamKey[]>([]);
   const [gateKeys, setGateKeys] = useState<GateKey[]>([]);
 
   // Provider form
   const [provName, setProvName] = useState("");
   const [provType, setProvType] = useState<"openai" | "anthropic">("openai");
-  const [provUrl, setProvUrl] = useState("https://open.bigmodel.cn/api/paas/v4");
+  const [provUrl, setProvUrl] = useState("");
+  const [provModels, setProvModels] = useState<string[]>([]);
+  // Available models for the selector (from builtin or empty for custom)
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+
+  // Editing state: null = adding new, string = editing provider id
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
 
   // Key form
   const [keyProviderId, setKeyProviderId] = useState("");
@@ -44,8 +142,11 @@ export function App() {
   >({});
 
   const reload = useCallback(async () => {
-    const [p, k, gk] = await Promise.all([fetchProviders(), fetchUpstreamKeys(), fetchGateKeys()]);
+    const [p, bp, k, gk] = await Promise.all([
+      fetchProviders(), fetchBuiltinProviders(), fetchUpstreamKeys(), fetchGateKeys(),
+    ]);
     setProviders(p);
+    setBuiltinProvs(bp);
     setKeys(k);
     setGateKeys(gk);
   }, []);
@@ -54,12 +155,42 @@ export function App() {
     reload();
   }, [reload]);
 
-  const handleAddProvider = async () => {
-    if (!provName || !provUrl) return;
-    await createProvider({ name: provName, type: provType, base_url: provUrl });
+  const resetProvForm = () => {
     setProvName("");
     setProvType("openai");
-    setProvUrl("https://open.bigmodel.cn/api/paas/v4");
+    setProvUrl("");
+    setProvModels([]);
+    setAvailableModels([]);
+    setEditingProviderId(null);
+  };
+
+  const handleAddProvider = async () => {
+    if (!provName || !provUrl) return;
+    await createProvider({ name: provName, type: provType, base_url: provUrl, models: provModels });
+    resetProvForm();
+    reload();
+  };
+
+  const handleEditProvider = (p: Provider) => {
+    setEditingProviderId(p.id);
+    setProvName(p.name);
+    setProvType(p.type as "openai" | "anthropic");
+    setProvUrl(p.base_url);
+    setProvModels(p.models || []);
+    // Find builtin models for suggestions
+    const bp = builtinProvs.find((b) => b.id === p.id);
+    setAvailableModels(bp ? bp.models : p.models || []);
+  };
+
+  const handleSaveProvider = async () => {
+    if (!editingProviderId || !provName || !provUrl) return;
+    await updateProvider(editingProviderId, {
+      name: provName,
+      type: provType,
+      base_url: provUrl,
+      models: provModels,
+    });
+    resetProvForm();
     reload();
   };
 
@@ -112,6 +243,8 @@ export function App() {
     if (!prov) return;
     setTestState((s) => ({ ...s, [id]: { loading: true } }));
 
+    const testModel = prov.models?.[0] || (prov.type === "anthropic" ? "claude-3-5-haiku-20241022" : "gpt-3.5-turbo");
+
     try {
       let resp: Response;
 
@@ -120,7 +253,7 @@ export function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "MiniMax-M1",
+            model: testModel,
             max_tokens: 64,
             messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
             stream: false,
@@ -131,7 +264,7 @@ export function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "glm-4-flash",
+            model: testModel,
             messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
             stream: false,
           }),
@@ -225,19 +358,45 @@ export function App() {
                     <th>名称</th>
                     <th>类型</th>
                     <th>Base URL</th>
+                    <th>模型</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {providers.map((p) => (
                     <tr key={p.id}>
-                      <td>{p.name}</td>
+                      <td>
+                        {p.name}
+                        {p.builtin && <span className="badge badge-builtin" style={{ marginLeft: 6 }}>内置</span>}
+                      </td>
                       <td>{p.type}</td>
                       <td style={{ fontFamily: "monospace", fontSize: 12 }}>{p.base_url}</td>
                       <td>
-                        <button className="btn-danger btn-sm" onClick={() => handleDeleteProvider(p.id)}>
-                          删除
-                        </button>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 3, maxWidth: 200 }}>
+                          {(p.models || []).slice(0, 3).map((m) => (
+                            <span key={m} className="badge badge-success" style={{ fontSize: 10 }}>{m}</span>
+                          ))}
+                          {(p.models || []).length > 3 && (
+                            <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                              +{p.models.length - 3}
+                            </span>
+                          )}
+                          {(!p.models || p.models.length === 0) && (
+                            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>-</span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="actions">
+                          <button className="btn-outline btn-sm" onClick={() => handleEditProvider(p)}>
+                            编辑
+                          </button>
+                          {!p.builtin && (
+                            <button className="btn-danger btn-sm" onClick={() => handleDeleteProvider(p.id)}>
+                              删除
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -246,9 +405,9 @@ export function App() {
             </div>
           )}
 
-          {/* ── 添加服务商 ── */}
+          {/* ── 添加/编辑服务商 ── */}
           <div className="card">
-            <h2>添加服务商</h2>
+            <h2>{editingProviderId ? "编辑服务商" : "添加服务商"}</h2>
             <div className="form-row">
               <div className="form-group">
                 <label>名称</label>
@@ -265,11 +424,6 @@ export function App() {
                   onChange={(e) => {
                     const t = e.target.value as "openai" | "anthropic";
                     setProvType(t);
-                    if (t === "anthropic") {
-                      setProvUrl("https://api.minimaxi.com/anthropic");
-                    } else {
-                      setProvUrl("https://open.bigmodel.cn/api/paas/v4");
-                    }
                   }}
                 >
                   <option value="openai">OpenAI 兼容</option>
@@ -281,15 +435,41 @@ export function App() {
                 <input
                   value={provUrl}
                   onChange={(e) => setProvUrl(e.target.value)}
+                  placeholder="https://api.example.com/v1"
                 />
               </div>
-              <button
-                className="btn-primary"
-                onClick={handleAddProvider}
-                disabled={!provName || !provUrl}
-              >
-                添加
-              </button>
+            </div>
+            <div className="form-group" style={{ marginBottom: 8 }}>
+              <label>模型列表</label>
+              <ModelSelector
+                models={availableModels}
+                selected={provModels}
+                onChange={setProvModels}
+              />
+            </div>
+            <div className="actions">
+              {editingProviderId ? (
+                <>
+                  <button
+                    className="btn-primary"
+                    onClick={handleSaveProvider}
+                    disabled={!provName || !provUrl}
+                  >
+                    保存
+                  </button>
+                  <button className="btn-outline" onClick={resetProvForm}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn-primary"
+                  onClick={handleAddProvider}
+                  disabled={!provName || !provUrl}
+                >
+                  添加
+                </button>
+              )}
             </div>
           </div>
 
