@@ -15,7 +15,7 @@ export function App() {
       <h1>LLM Rate Gate</h1>
       <p>Admin backend: <strong>{health}</strong></p>
       <p style={{ color: "#888" }}>
-        Proxy API: <code>http://localhost:16890</code> | Admin API: <code>http://localhost:16891</code>
+        Backend API: <code>http://localhost:16890</code> | Web UI: <code>http://localhost:16891</code>
       </p>
     </div>
   );
