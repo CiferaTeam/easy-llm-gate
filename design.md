@@ -20,10 +20,10 @@
 |------|------|------|
 | 后端 | **Node.js + Express/Hono** | TypeScript 全栈，AI SDK 生态最好 |
 | 前端 | **React (内嵌 SPA)** | 与后端同语言，打包后 serve 静态文件 |
-| 限流引擎 | **Redis + Lua 脚本** | 原子令牌桶操作 |
-| 排队 | **Redis List** | LPUSH/BRPOP 实现请求队列 |
-| 存储 | **Redis** | 所有配置、Key、统计 |
-| 部署 | **docker-compose** | 单 compose 文件：app + redis |
+| 限流引擎 | **内存令牌桶** | 进程内令牌桶，无外部依赖 |
+| 排队 | **内存队列** | 进程内请求队列 |
+| 存储 | **SQLite (better-sqlite3)** | 所有配置、Key、统计，WAL 模式 |
+| 部署 | **docker-compose** | 单 compose 文件，仅 app 服务 |
 
 ---
 
@@ -68,96 +68,68 @@
 
 ---
 
-## 3. 数据模型 (Redis)
+## 3. 数据模型 (SQLite)
 
 ### 3.1 上游 Provider 配置
 
-```
-# Hash: provider:{id}
-provider:openai → {
-  id: "openai",
-  name: "OpenAI",
-  type: "openai",              # openai | anthropic | custom
-  base_url: "https://api.openai.com/v1",
-  created_at: timestamp
-}
+```sql
+CREATE TABLE providers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  type       TEXT NOT NULL DEFAULT 'openai',  -- openai | anthropic | custom
+  base_url   TEXT NOT NULL,
+  models     TEXT NOT NULL DEFAULT '[]',       -- JSON array
+  builtin    INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT 0
+);
 ```
 
 ### 3.2 上游 API Key
 
-```
-# Hash: upstream_key:{id}
-upstream_key:uk_001 → {
-  id: "uk_001",
-  provider_id: "openai",
-  api_key: "sk-proj-xxxxxx",        # 明文存储（本地部署）
-  alias: "OpenAI主力Key",
-  models: ["gpt-4o", "gpt-4o-mini"],  # 该 Key 允许的模型列表（空=全部）
-  rpm_limit: 60,                     # 每分钟请求数上限
-  tpm_limit: 150000,                 # 每分钟 Token 上限
-  fallback_enabled: true,            # 是否允许作为其他 Key 的 fallback
-  enabled: true,
-  health: "healthy",                 # healthy | cooldown | disabled
-  cooldown_until: null,              # 冷却结束时间
-  created_at: timestamp
-}
+```sql
+CREATE TABLE upstream_keys (
+  id          TEXT PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  api_key     TEXT NOT NULL,              -- 明文存储（本地部署）
+  alias       TEXT NOT NULL DEFAULT '',
+  rpm_limit   INTEGER NOT NULL DEFAULT 60,
+  tpm_limit   INTEGER NOT NULL DEFAULT 100000,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
 
-# Set: 快速查询某 provider 下的所有 key
-provider_keys:openai → ["uk_001", "uk_002", ...]
+CREATE INDEX idx_upstream_keys_provider ON upstream_keys(provider_id);
 ```
 
-### 3.3 下游 API Key
+### 3.3 下游 Gate Key
 
-```
-# Hash: downstream_key:{id}
-downstream_key:sk-local-abc123 → {
-  id: "sk-local-abc123",
-  name: "OpenClaw主进程",
-  user_id: "user_default",
-  enabled: true,
-  created_at: timestamp
-}
-
-# Set: 所有下游 Key 列表
-downstream_keys → ["sk-local-abc123", "sk-local-def456", ...]
+```sql
+CREATE TABLE gate_keys (
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  format           TEXT NOT NULL DEFAULT 'openai',
+  upstream_key_ids TEXT NOT NULL DEFAULT '[]',  -- JSON array of upstream key IDs
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  created_at       INTEGER NOT NULL DEFAULT 0
+);
 ```
 
-### 3.4 令牌桶状态 (由 Lua 脚本管理)
+### 3.4 令牌桶状态 (内存)
 
-```
-# Hash: token_bucket:{upstream_key_id}:rpm
-token_bucket:uk_001:rpm → {
-  tokens: 58.5,           # 当前可用令牌数
-  last_refill: timestamp  # 上次填充时间
-}
+令牌桶状态完全在进程内存中维护，无需持久化：
 
-# Hash: token_bucket:{upstream_key_id}:tpm
-token_bucket:uk_001:tpm → {
-  tokens: 148000,
-  last_refill: timestamp
-}
+```typescript
+// 内存中的令牌桶 Map
+Map<string, { tokens: number; lastRefill: number }>
+// key 格式: "{upstream_key_id}:rpm" 或 "{upstream_key_id}:tpm"
 ```
 
 ### 3.5 统计数据
 
-```
-# Hash: stats:downstream:{key_id}:{date}
-stats:downstream:sk-local-abc123:2025-03-07 → {
-  total_requests: 150,
-  success: 140,
-  failed: 10,
-  total_tokens: 250000,
-  queued_requests: 30,
-  avg_queue_wait_ms: 1200
-}
-
-# Hash: stats:upstream:{key_id}:{date}
-stats:upstream:uk_001:2025-03-07 → {
-  total_requests: 80,
-  success: 78,
-  rate_limited: 2,
-  total_tokens: 120000
-}
+```sql
+-- 未来扩展：可在 SQLite 中增加 stats 表
+-- 当前阶段统计数据暂存内存
 ```
 
 ---
@@ -197,54 +169,45 @@ stats:upstream:uk_001:2025-03-07 → {
    - 如果该 Key 的 fallback_enabled=false → 不 fallback，直接返回错误
 ```
 
-### 4.2 令牌桶 Lua 脚本 (核心)
+### 4.2 内存令牌桶 (核心)
 
-```lua
--- token_bucket.lua
--- KEYS[1] = bucket key (e.g. token_bucket:uk_001:rpm)
--- ARGV[1] = capacity (max tokens)
--- ARGV[2] = refill_rate (tokens per second)
--- ARGV[3] = now (current timestamp in ms)
--- ARGV[4] = tokens_needed (usually 1 for RPM)
---
--- Returns: {allowed(0/1), current_tokens, wait_time_ms}
+```typescript
+// token-bucket.ts — 进程内令牌桶实现
+interface Bucket {
+  tokens: number;
+  lastRefill: number; // ms timestamp
+}
 
-local key = KEYS[1]
-local capacity = tonumber(ARGV[1])
-local refill_rate = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-local needed = tonumber(ARGV[4])
+const buckets = new Map<string, Bucket>();
 
-local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
-local tokens = tonumber(bucket[1])
-local last_refill = tonumber(bucket[2])
+function tryConsume(
+  key: string,       // e.g. "uk_001:rpm"
+  capacity: number,  // max tokens
+  refillRate: number, // tokens per second
+  needed: number      // tokens to consume (1 for RPM)
+): { allowed: boolean; tokens: number; waitMs: number } {
+  const now = Date.now();
+  let bucket = buckets.get(key);
+  if (!bucket) {
+    bucket = { tokens: capacity, lastRefill: now };
+    buckets.set(key, bucket);
+  }
 
--- 初始化
-if tokens == nil then
-  tokens = capacity
-  last_refill = now
-end
+  // 补充令牌
+  const elapsed = (now - bucket.lastRefill) / 1000;
+  bucket.tokens = Math.min(capacity, bucket.tokens + elapsed * refillRate);
+  bucket.lastRefill = now;
 
--- 补充令牌
-local elapsed = (now - last_refill) / 1000.0  -- convert to seconds
-local refill = elapsed * refill_rate
-tokens = math.min(capacity, tokens + refill)
-last_refill = now
+  // 尝试消费
+  if (bucket.tokens >= needed) {
+    bucket.tokens -= needed;
+    return { allowed: true, tokens: bucket.tokens, waitMs: 0 };
+  }
 
--- 尝试消费
-if tokens >= needed then
-  tokens = tokens - needed
-  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', last_refill)
-  redis.call('EXPIRE', key, 120)
-  return {1, math.floor(tokens * 100) / 100, 0}
-else
-  -- 计算需要等待的时间
-  local deficit = needed - tokens
-  local wait_ms = math.ceil((deficit / refill_rate) * 1000)
-  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', last_refill)
-  redis.call('EXPIRE', key, 120)
-  return {0, math.floor(tokens * 100) / 100, wait_ms}
-end
+  const deficit = needed - bucket.tokens;
+  const waitMs = Math.ceil((deficit / refillRate) * 1000);
+  return { allowed: false, tokens: bucket.tokens, waitMs };
+}
 ```
 
 ### 4.3 排队调度器
@@ -253,8 +216,8 @@ end
 后台循环（每 100ms 一次）：
   for each provider:
     for each upstream_key (enabled & healthy):
-      检查令牌桶是否有余量
-      如果有 → 从该 provider 的等待队列取出请求
+      检查内存令牌桶是否有余量
+      如果有 → 从该 provider 的内存等待队列取出请求
       转发并处理响应
 ```
 
@@ -418,22 +381,16 @@ services:
       - "9090:9090"   # 代理端口
       - "9091:9091"   # 管理端口
     environment:
-      - REDIS_URL=redis://redis:6379
+      - DB_PATH=/data/gate.db
       - PROXY_PORT=9090
       - ADMIN_PORT=9091
       - MAX_QUEUE_TIMEOUT=30000     # 最大排队等待 30s
       - QUEUE_POLL_INTERVAL=100     # 调度器轮询间隔 100ms
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
     volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes
+      - gate-data:/data
 
 volumes:
-  redis-data:
+  gate-data:
 ```
 
 ---

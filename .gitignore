@@ -3,3 +3,4 @@ dist/
 web/dist/
 *.log
 .env
+data/

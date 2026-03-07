@@ -1,4 +1,4 @@
-import { redis } from "./redis.js";
+import { db } from "./db.js";
 import { builtinProviders, getBuiltinProvider, type BuiltinProvider } from "./builtin-providers.js";
 
 // ── Interfaces ──
@@ -9,7 +9,7 @@ export interface Provider {
   type: "openai" | "anthropic" | "custom";
   base_url: string;
   models: string[];
-  builtin: boolean; // true = originated from builtin registry
+  builtin: boolean;
   created_at: number;
 }
 
@@ -45,24 +45,17 @@ export function maskKey(key: string): string {
   return key.slice(0, 4) + "****" + key.slice(-4);
 }
 
-// Serialize/deserialize helpers for Redis Hash
-function toHash(obj: Record<string, any>): Record<string, string> {
-  const h: Record<string, string> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    h[k] = typeof v === "object" ? JSON.stringify(v) : String(v);
-  }
-  return h;
-}
+// Row → typed object helpers
 
-function parseProvider(h: Record<string, string>): Provider {
+function rowToProvider(row: any): Provider {
   return {
-    id: h.id,
-    name: h.name,
-    type: h.type as Provider["type"],
-    base_url: h.base_url,
-    models: h.models ? JSON.parse(h.models) : [],
-    builtin: h.builtin === "true",
-    created_at: Number(h.created_at),
+    id: row.id,
+    name: row.name,
+    type: row.type as Provider["type"],
+    base_url: row.base_url,
+    models: JSON.parse(row.models || "[]"),
+    builtin: row.builtin === 1,
+    created_at: row.created_at,
   };
 }
 
@@ -78,69 +71,91 @@ function builtinToProvider(b: BuiltinProvider): Provider {
   };
 }
 
-function parseUpstreamKey(h: Record<string, string>): UpstreamKey {
+function rowToUpstreamKey(row: any): UpstreamKey {
   return {
-    id: h.id,
-    provider_id: h.provider_id,
-    api_key: h.api_key,
-    alias: h.alias || "",
-    rpm_limit: Number(h.rpm_limit),
-    tpm_limit: Number(h.tpm_limit),
-    enabled: h.enabled === "true",
-    created_at: Number(h.created_at),
+    id: row.id,
+    provider_id: row.provider_id,
+    api_key: row.api_key,
+    alias: row.alias || "",
+    rpm_limit: row.rpm_limit,
+    tpm_limit: row.tpm_limit,
+    enabled: row.enabled === 1,
+    created_at: row.created_at,
   };
 }
 
-function parseGateKey(h: Record<string, string>): GateKey {
+function rowToGateKey(row: any): GateKey {
   return {
-    id: h.id,
-    name: h.name,
-    format: h.format as GateKey["format"],
-    upstream_key_ids: JSON.parse(h.upstream_key_ids || "[]"),
-    enabled: h.enabled === "true",
-    created_at: Number(h.created_at),
+    id: row.id,
+    name: row.name,
+    format: row.format as GateKey["format"],
+    upstream_key_ids: JSON.parse(row.upstream_key_ids || "[]"),
+    enabled: row.enabled === 1,
+    created_at: row.created_at,
   };
 }
+
+// ── Prepared statements ──
+
+const stmts = {
+  // Providers
+  allProviders: db.prepare("SELECT * FROM providers"),
+  getProvider: db.prepare("SELECT * FROM providers WHERE id = ?"),
+  insertProvider: db.prepare(
+    "INSERT INTO providers (id, name, type, base_url, models, builtin, created_at) VALUES (@id, @name, @type, @base_url, @models, @builtin, @created_at)"
+  ),
+  updateProvider: db.prepare(
+    "UPDATE providers SET name = @name, type = @type, base_url = @base_url, models = @models WHERE id = @id"
+  ),
+  deleteProvider: db.prepare("DELETE FROM providers WHERE id = ?"),
+
+  // Upstream keys
+  allUpstreamKeys: db.prepare("SELECT * FROM upstream_keys"),
+  getUpstreamKey: db.prepare("SELECT * FROM upstream_keys WHERE id = ?"),
+  getUpstreamKeysByProvider: db.prepare("SELECT * FROM upstream_keys WHERE provider_id = ?"),
+  insertUpstreamKey: db.prepare(
+    "INSERT INTO upstream_keys (id, provider_id, api_key, alias, rpm_limit, tpm_limit, enabled, created_at) VALUES (@id, @provider_id, @api_key, @alias, @rpm_limit, @tpm_limit, @enabled, @created_at)"
+  ),
+  deleteUpstreamKey: db.prepare("DELETE FROM upstream_keys WHERE id = ?"),
+
+  // Gate keys
+  allGateKeys: db.prepare("SELECT * FROM gate_keys"),
+  getGateKey: db.prepare("SELECT * FROM gate_keys WHERE id = ?"),
+  insertGateKey: db.prepare(
+    "INSERT INTO gate_keys (id, name, format, upstream_key_ids, enabled, created_at) VALUES (@id, @name, @format, @upstream_key_ids, @enabled, @created_at)"
+  ),
+  deleteGateKey: db.prepare("DELETE FROM gate_keys WHERE id = ?"),
+  updateGateKeyUpstreamIds: db.prepare(
+    "UPDATE gate_keys SET upstream_key_ids = ? WHERE id = ?"
+  ),
+};
 
 // ── Provider CRUD ──
 
 export async function getProviders(): Promise<Provider[]> {
-  // 1. Get all Redis providers
-  const ids = await redis.smembers("providers");
-  let redisProviders: Provider[] = [];
-  if (ids.length) {
-    const pipe = redis.pipeline();
-    for (const id of ids) pipe.hgetall(`provider:${id}`);
-    const results = await pipe.exec();
-    redisProviders = (results || [])
-      .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseProvider(h as Record<string, string>)))
-      .filter(Boolean) as Provider[];
-  }
+  const rows = stmts.allProviders.all();
+  const dbProviders = rows.map(rowToProvider);
+  const dbIds = new Set(dbProviders.map((p) => p.id));
 
-  // 2. Merge: builtin providers that are NOT overridden in Redis come first
-  const redisIds = new Set(redisProviders.map((p) => p.id));
   const merged: Provider[] = [];
   for (const bp of builtinProviders) {
-    if (redisIds.has(bp.id)) {
-      // Redis override exists — use it but keep builtin flag
-      merged.push(redisProviders.find((p) => p.id === bp.id)!);
+    if (dbIds.has(bp.id)) {
+      merged.push(dbProviders.find((p) => p.id === bp.id)!);
     } else {
       merged.push(builtinToProvider(bp));
     }
   }
-  // 3. Append user-created (non-builtin) providers
-  for (const rp of redisProviders) {
-    if (!builtinProviders.some((bp) => bp.id === rp.id)) {
-      merged.push(rp);
+  for (const dp of dbProviders) {
+    if (!builtinProviders.some((bp) => bp.id === dp.id)) {
+      merged.push(dp);
     }
   }
   return merged;
 }
 
 export async function getProvider(id: string): Promise<Provider | undefined> {
-  const h = await redis.hgetall(`provider:${id}`);
-  if (h && h.id) return parseProvider(h);
-  // Fallback to builtin
+  const row = stmts.getProvider.get(id);
+  if (row) return rowToProvider(row);
   const bp = getBuiltinProvider(id);
   return bp ? builtinToProvider(bp) : undefined;
 }
@@ -160,8 +175,15 @@ export async function addProvider(data: {
     builtin: false,
     created_at: Date.now(),
   };
-  await redis.hset(`provider:${p.id}`, toHash(p as any));
-  await redis.sadd("providers", p.id);
+  stmts.insertProvider.run({
+    id: p.id,
+    name: p.name,
+    type: p.type,
+    base_url: p.base_url,
+    models: JSON.stringify(p.models),
+    builtin: 0,
+    created_at: p.created_at,
+  });
   return p;
 }
 
@@ -169,73 +191,67 @@ export async function updateProvider(
   id: string,
   data: Partial<Pick<Provider, "name" | "type" | "base_url" | "models">>
 ): Promise<Provider | undefined> {
-  // For builtin providers not yet in Redis, copy the builtin first
   let existing = await getProvider(id);
   if (!existing) return undefined;
 
-  const isInRedis = !!(await redis.hget(`provider:${id}`, "id"));
-  if (!isInRedis) {
-    // Copy builtin to Redis so we can override
+  const row = stmts.getProvider.get(id);
+  if (!row) {
+    // Builtin not yet in DB — copy it
     const full: Provider = { ...existing, ...data, builtin: true };
-    await redis.hset(`provider:${id}`, toHash(full as any));
-    await redis.sadd("providers", id);
+    stmts.insertProvider.run({
+      id: full.id,
+      name: full.name,
+      type: full.type,
+      base_url: full.base_url,
+      models: JSON.stringify(full.models),
+      builtin: 1,
+      created_at: full.created_at,
+    });
     return full;
   }
 
-  // Update existing Redis entry
-  const updates: Record<string, string> = {};
-  if (data.name !== undefined) updates.name = data.name;
-  if (data.type !== undefined) updates.type = data.type;
-  if (data.base_url !== undefined) updates.base_url = data.base_url.replace(/\/+$/, "");
-  if (data.models !== undefined) updates.models = JSON.stringify(data.models);
-
-  if (Object.keys(updates).length > 0) {
-    await redis.hset(`provider:${id}`, updates);
-  }
+  const updated = {
+    id,
+    name: data.name ?? existing.name,
+    type: data.type ?? existing.type,
+    base_url: data.base_url ? data.base_url.replace(/\/+$/, "") : existing.base_url,
+    models: JSON.stringify(data.models ?? existing.models),
+  };
+  stmts.updateProvider.run(updated);
   return getProvider(id);
 }
 
 export async function deleteProvider(id: string): Promise<boolean> {
-  const removed = await redis.srem("providers", id);
-  if (!removed) return false;
-  await redis.del(`provider:${id}`);
-  // cascade: delete upstream keys belonging to this provider
-  const ukIds = await redis.smembers(`provider_keys:${id}`);
-  for (const ukId of ukIds) {
-    await deleteUpstreamKey(ukId);
+  // CASCADE will handle upstream_keys deletion via FK
+  const result = stmts.deleteProvider.run(id);
+  if (!result.changes) return false;
+  // Also clean up gate_keys referencing deleted upstream keys
+  const gateKeys = stmts.allGateKeys.all().map(rowToGateKey);
+  const remainingUkIds = new Set(
+    (stmts.allUpstreamKeys.all() as any[]).map((r) => r.id)
+  );
+  for (const gk of gateKeys) {
+    const filtered = gk.upstream_key_ids.filter((ukId) => remainingUkIds.has(ukId));
+    if (filtered.length !== gk.upstream_key_ids.length) {
+      stmts.updateGateKeyUpstreamIds.run(JSON.stringify(filtered), gk.id);
+    }
   }
-  await redis.del(`provider_keys:${id}`);
   return true;
 }
 
 // ── Upstream Key CRUD ──
 
 export async function getUpstreamKeys(): Promise<UpstreamKey[]> {
-  const ids = await redis.smembers("upstream_keys");
-  if (!ids.length) return [];
-  const pipe = redis.pipeline();
-  for (const id of ids) pipe.hgetall(`upstream_key:${id}`);
-  const results = await pipe.exec();
-  return (results || [])
-    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseUpstreamKey(h as Record<string, string>)))
-    .filter(Boolean) as UpstreamKey[];
+  return stmts.allUpstreamKeys.all().map(rowToUpstreamKey);
 }
 
 export async function getUpstreamKey(id: string): Promise<UpstreamKey | undefined> {
-  const h = await redis.hgetall(`upstream_key:${id}`);
-  if (!h || !h.id) return undefined;
-  return parseUpstreamKey(h);
+  const row = stmts.getUpstreamKey.get(id);
+  return row ? rowToUpstreamKey(row) : undefined;
 }
 
 export async function getUpstreamKeysByProvider(providerId: string): Promise<UpstreamKey[]> {
-  const ids = await redis.smembers(`provider_keys:${providerId}`);
-  if (!ids.length) return [];
-  const pipe = redis.pipeline();
-  for (const id of ids) pipe.hgetall(`upstream_key:${id}`);
-  const results = await pipe.exec();
-  return (results || [])
-    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseUpstreamKey(h as Record<string, string>)))
-    .filter(Boolean) as UpstreamKey[];
+  return stmts.getUpstreamKeysByProvider.all(providerId).map(rowToUpstreamKey);
 }
 
 export async function addUpstreamKey(data: {
@@ -255,27 +271,28 @@ export async function addUpstreamKey(data: {
     enabled: true,
     created_at: Date.now(),
   };
-  await redis.hset(`upstream_key:${k.id}`, toHash(k as any));
-  await redis.sadd("upstream_keys", k.id);
-  await redis.sadd(`provider_keys:${k.provider_id}`, k.id);
+  stmts.insertUpstreamKey.run({
+    id: k.id,
+    provider_id: k.provider_id,
+    api_key: k.api_key,
+    alias: k.alias,
+    rpm_limit: k.rpm_limit,
+    tpm_limit: k.tpm_limit,
+    enabled: 1,
+    created_at: k.created_at,
+  });
   return k;
 }
 
 export async function deleteUpstreamKey(id: string): Promise<boolean> {
-  const h = await redis.hgetall(`upstream_key:${id}`);
-  if (!h || !h.id) return false;
-  await redis.srem("upstream_keys", id);
-  await redis.srem(`provider_keys:${h.provider_id}`, id);
-  await redis.del(`upstream_key:${id}`);
-  // cascade: remove from all gate keys
-  const gkIds = await redis.smembers("gate_keys");
-  for (const gkId of gkIds) {
-    const raw = await redis.hget(`gate_key:${gkId}`, "upstream_key_ids");
-    if (!raw) continue;
-    const arr: string[] = JSON.parse(raw);
-    if (arr.includes(id)) {
-      const updated = arr.filter((kid) => kid !== id);
-      await redis.hset(`gate_key:${gkId}`, "upstream_key_ids", JSON.stringify(updated));
+  const result = stmts.deleteUpstreamKey.run(id);
+  if (!result.changes) return false;
+  // Remove from all gate keys
+  const gateKeys = stmts.allGateKeys.all().map(rowToGateKey);
+  for (const gk of gateKeys) {
+    if (gk.upstream_key_ids.includes(id)) {
+      const updated = gk.upstream_key_ids.filter((kid) => kid !== id);
+      stmts.updateGateKeyUpstreamIds.run(JSON.stringify(updated), gk.id);
     }
   }
   return true;
@@ -284,20 +301,12 @@ export async function deleteUpstreamKey(id: string): Promise<boolean> {
 // ── Gate Key CRUD ──
 
 export async function getGateKeys(): Promise<GateKey[]> {
-  const ids = await redis.smembers("gate_keys");
-  if (!ids.length) return [];
-  const pipe = redis.pipeline();
-  for (const id of ids) pipe.hgetall(`gate_key:${id}`);
-  const results = await pipe.exec();
-  return (results || [])
-    .map(([err, h]) => (err || !h || !Object.keys(h as any).length ? null : parseGateKey(h as Record<string, string>)))
-    .filter(Boolean) as GateKey[];
+  return stmts.allGateKeys.all().map(rowToGateKey);
 }
 
 export async function getGateKey(id: string): Promise<GateKey | undefined> {
-  const h = await redis.hgetall(`gate_key:${id}`);
-  if (!h || !h.id) return undefined;
-  return parseGateKey(h);
+  const row = stmts.getGateKey.get(id);
+  return row ? rowToGateKey(row) : undefined;
 }
 
 export async function addGateKey(data: {
@@ -313,24 +322,29 @@ export async function addGateKey(data: {
     enabled: true,
     created_at: Date.now(),
   };
-  await redis.hset(`gate_key:${gk.id}`, toHash(gk as any));
-  await redis.sadd("gate_keys", gk.id);
+  stmts.insertGateKey.run({
+    id: gk.id,
+    name: gk.name,
+    format: gk.format,
+    upstream_key_ids: JSON.stringify(gk.upstream_key_ids),
+    enabled: 1,
+    created_at: gk.created_at,
+  });
   return gk;
 }
 
 export async function deleteGateKey(id: string): Promise<boolean> {
-  const removed = await redis.srem("gate_keys", id);
-  if (!removed) return false;
-  await redis.del(`gate_key:${id}`);
-  return true;
+  const result = stmts.deleteGateKey.run(id);
+  return result.changes > 0;
 }
 
 // ── Proxy Helpers ──
 
 export async function authenticateGateKey(apiKey: string): Promise<GateKey | null> {
-  const h = await redis.hgetall(`gate_key:${apiKey}`);
-  if (!h || !h.id || h.enabled !== "true") return null;
-  return parseGateKey(h);
+  const row = stmts.getGateKey.get(apiKey);
+  if (!row) return null;
+  const gk = rowToGateKey(row);
+  return gk.enabled ? gk : null;
 }
 
 export async function findUpstreamForGateKey(
@@ -338,12 +352,14 @@ export async function findUpstreamForGateKey(
   providerType?: Provider["type"]
 ): Promise<{ key: UpstreamKey; provider: Provider } | null> {
   for (const ukId of gateKey.upstream_key_ids) {
-    const kh = await redis.hgetall(`upstream_key:${ukId}`);
-    if (!kh || !kh.id || kh.enabled !== "true") continue;
-    const provider = await getProvider(kh.provider_id);
+    const ukRow = stmts.getUpstreamKey.get(ukId);
+    if (!ukRow) continue;
+    const uk = rowToUpstreamKey(ukRow);
+    if (!uk.enabled) continue;
+    const provider = await getProvider(uk.provider_id);
     if (!provider) continue;
     if (providerType && provider.type !== providerType) continue;
-    return { key: parseUpstreamKey(kh), provider };
+    return { key: uk, provider };
   }
   return null;
 }
@@ -353,14 +369,13 @@ export async function findKeyForProxy(providerType?: Provider["type"]): Promise<
   key: UpstreamKey;
   provider: Provider;
 } | null> {
-  const ukIds = await redis.smembers("upstream_keys");
-  for (const ukId of ukIds) {
-    const kh = await redis.hgetall(`upstream_key:${ukId}`);
-    if (!kh || !kh.id || kh.enabled !== "true") continue;
-    const ph = await redis.hgetall(`provider:${kh.provider_id}`);
-    if (!ph || !ph.id) continue;
-    if (providerType && ph.type !== providerType) continue;
-    return { key: parseUpstreamKey(kh), provider: parseProvider(ph) };
+  const allKeys = stmts.allUpstreamKeys.all().map(rowToUpstreamKey);
+  for (const uk of allKeys) {
+    if (!uk.enabled) continue;
+    const provider = await getProvider(uk.provider_id);
+    if (!provider) continue;
+    if (providerType && provider.type !== providerType) continue;
+    return { key: uk, provider };
   }
   return null;
 }
