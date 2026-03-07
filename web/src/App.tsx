@@ -149,10 +149,15 @@ export function App() {
     setBuiltinProvs(bp);
     setKeys(k);
     setGateKeys(gk);
+    return { keys: k };
   }, []);
 
   useEffect(() => {
-    reload();
+    reload().then(({ keys: latestKeys }) => {
+      for (const k of latestKeys) {
+        handleTestKey(k.id);
+      }
+    });
   }, [reload]);
 
   const resetProvForm = () => {
