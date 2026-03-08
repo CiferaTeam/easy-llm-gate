@@ -1,14 +1,13 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
-  AreaChart,
-  Area,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   Legend,
   ResponsiveContainer,
-  ReferenceLine,
 } from "recharts";
 import {
   fetchUpstreamKeys,
@@ -105,15 +104,7 @@ function TrafficChart({ title, data, gateKeys, unit }: TrafficChartProps) {
     <div className="chart-container">
       <h3 className="chart-title">{title}</h3>
       <ResponsiveContainer width="100%" height={320}>
-        <AreaChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-          <defs>
-            {gateKeys.map((gk, i) => (
-              <linearGradient key={gk.id} id={`grad-${gk.id}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={GATE_COLORS[i % GATE_COLORS.length]} stopOpacity={0.4} />
-                <stop offset="95%" stopColor={GATE_COLORS[i % GATE_COLORS.length]} stopOpacity={0.05} />
-              </linearGradient>
-            ))}
-          </defs>
+        <LineChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
           <XAxis
             dataKey="time"
@@ -144,40 +135,45 @@ function TrafficChart({ title, data, gateKeys, unit }: TrafficChartProps) {
               String(name),
             ]}
           />
-          <Legend
-            wrapperStyle={{ fontSize: 12, color: "#8b8fa3" }}
-          />
+          <Legend wrapperStyle={{ fontSize: 12, color: "#8b8fa3" }} />
 
-          {/* Limit reference line */}
+          {/* Limit line (red dashed) */}
           {maxLimit > 0 && (
-            <ReferenceLine
-              y={maxLimit}
+            <Line
+              type="stepAfter"
+              dataKey="limit"
+              name={`上限 (${maxLimit.toLocaleString()} ${unit})`}
               stroke="#ef4444"
               strokeDasharray="6 3"
               strokeWidth={1.5}
-              label={{
-                value: `上限 ${maxLimit.toLocaleString()} ${unit}`,
-                fill: "#ef4444",
-                fontSize: 11,
-                position: "insideTopRight",
-              }}
+              dot={false}
+              activeDot={false}
             />
           )}
 
-          {/* Stacked areas for each gate key */}
+          {/* Total line */}
+          <Line
+            type="monotone"
+            dataKey="actual"
+            name="总量"
+            stroke="#3b82f6"
+            strokeWidth={2}
+            dot={false}
+          />
+
+          {/* Per gate key lines */}
           {gateKeys.map((gk, i) => (
-            <Area
+            <Line
               key={gk.id}
               type="monotone"
               dataKey={gk.id}
               name={gk.name}
-              stackId="traffic"
               stroke={GATE_COLORS[i % GATE_COLORS.length]}
-              fill={`url(#grad-${gk.id})`}
               strokeWidth={1.5}
+              dot={false}
             />
           ))}
-        </AreaChart>
+        </LineChart>
       </ResponsiveContainer>
     </div>
   );
