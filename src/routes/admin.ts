@@ -160,6 +160,65 @@ admin.post("/upstream-keys/:id/test", async (c) => {
   }
 });
 
+admin.post("/upstream-keys/:id/chat-test", async (c) => {
+  const key = await getUpstreamKey(c.req.param("id"));
+  if (!key) return c.json({ error: "key not found" }, 404);
+
+  const provider = await getProvider(key.provider_id);
+  if (!provider) return c.json({ error: "provider not found" }, 404);
+
+  const testModel = provider.models?.[0] || (provider.type === "anthropic" ? "claude-3-5-haiku-20241022" : "gpt-3.5-turbo");
+
+  try {
+    let resp: Response;
+
+    if (provider.type === "anthropic") {
+      resp = await fetch(`${provider.base_url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key.api_key,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: testModel,
+          max_tokens: 64,
+          messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
+          stream: false,
+        }),
+      });
+    } else {
+      resp = await fetch(`${provider.base_url}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key.api_key}`,
+        },
+        body: JSON.stringify({
+          model: testModel,
+          messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
+          stream: false,
+        }),
+      });
+    }
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      return c.json({ ok: false, status: resp.status, error: text });
+    }
+
+    const data = await resp.json();
+    // Extract text content from response
+    const content =
+      data.content?.[0]?.text ??
+      data.choices?.[0]?.message?.content ??
+      JSON.stringify(data);
+    return c.json({ ok: true, content });
+  } catch (err: any) {
+    return c.json({ ok: false, error: err.message });
+  }
+});
+
 // ── Gate Keys ──
 admin.get("/gate-keys", async (c) => c.json(await getGateKeys()));
 

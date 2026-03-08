@@ -111,6 +111,13 @@ export async function testUpstreamKey(
   return r.json();
 }
 
+export async function chatTestUpstreamKey(
+  id: string
+): Promise<{ ok: boolean; content?: string; error?: string }> {
+  const r = await fetch(`/api/upstream-keys/${id}/chat-test`, { method: "POST" });
+  return r.json();
+}
+
 // ── Gate Keys ──
 
 export async function fetchGateKeys(): Promise<GateKey[]> {

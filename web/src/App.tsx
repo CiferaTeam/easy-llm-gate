@@ -10,6 +10,7 @@ import {
   createUpstreamKey,
   deleteUpstreamKey,
   testUpstreamKey,
+  chatTestUpstreamKey,
   createGateKey,
   deleteGateKey,
   type Provider,
@@ -245,58 +246,12 @@ export function App() {
   };
 
   const handleProxyTest = async (id: string) => {
-    const key = keys.find((k) => k.id === id);
-    if (!key) return;
-    const prov = providers.find((p) => p.id === key.provider_id);
-    if (!prov) return;
     setTestState((s) => ({ ...s, [id]: { loading: true } }));
-
-    const testModel = prov.models?.[0] || (prov.type === "anthropic" ? "claude-3-5-haiku-20241022" : "gpt-3.5-turbo");
-
     try {
-      let resp: Response;
-
-      if (prov.type === "anthropic") {
-        resp = await fetch("/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: testModel,
-            max_tokens: 64,
-            messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
-            stream: false,
-          }),
-        });
-      } else {
-        resp = await fetch("/v1/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: testModel,
-            messages: [{ role: "user", content: "你好，请用一句话介绍你自己" }],
-            stream: false,
-          }),
-        });
-      }
-
-      if (!resp.ok) {
-        const err = await resp.text();
-        setTestState((s) => ({
-          ...s,
-          [id]: { loading: false, ok: false, result: `代理错误 ${resp.status}: ${err}` },
-        }));
-        return;
-      }
-
-      const data = await resp.json();
-      // Anthropic format: data.content[0].text; OpenAI format: data.choices[0].message.content
-      const content =
-        data.content?.[0]?.text ??
-        data.choices?.[0]?.message?.content ??
-        JSON.stringify(data);
+      const r = await chatTestUpstreamKey(id);
       setTestState((s) => ({
         ...s,
-        [id]: { loading: false, ok: true, result: content },
+        [id]: { loading: false, ok: r.ok, result: r.ok ? r.content! : (r.error ?? "请求失败") },
       }));
     } catch (e: any) {
       setTestState((s) => ({
