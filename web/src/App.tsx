@@ -109,7 +109,7 @@ function ModelSelector({
 }
 
 export function App() {
-  const [tab, setTab] = useState<"providers" | "gatekeys" | "stats">("providers");
+  const [tab, setTab] = useState<"providers" | "gatekeys" | "stats">("stats");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [builtinProvs, setBuiltinProvs] = useState<BuiltinProvider[]>([]);
   const [keys, setKeys] = useState<UpstreamKey[]>([]);
@@ -314,14 +314,14 @@ export function App() {
       <h1>LLM Rate Gate</h1>
 
       <div className="tabs">
+        <button className={`tab ${tab === "stats" ? "active" : ""}`} onClick={() => setTab("stats")}>
+          流量统计
+        </button>
         <button className={`tab ${tab === "providers" ? "active" : ""}`} onClick={() => setTab("providers")}>
           服务商 & Key
         </button>
         <button className={`tab ${tab === "gatekeys" ? "active" : ""}`} onClick={() => setTab("gatekeys")}>
           Gate Key
-        </button>
-        <button className={`tab ${tab === "stats" ? "active" : ""}`} onClick={() => setTab("stats")}>
-          流量统计
         </button>
       </div>
 

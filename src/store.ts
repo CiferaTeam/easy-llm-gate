@@ -259,6 +259,22 @@ export async function addUpstreamKey(data: {
   rpm_limit?: number;
   tpm_limit?: number;
 }): Promise<UpstreamKey> {
+  // Ensure builtin provider is persisted to DB before FK insert
+  const dbRow = stmts.getProvider.get(data.provider_id);
+  if (!dbRow) {
+    const bp = getBuiltinProvider(data.provider_id);
+    if (bp) {
+      stmts.insertProvider.run({
+        id: bp.id,
+        name: bp.name,
+        type: bp.type,
+        base_url: bp.base_url,
+        models: JSON.stringify(bp.models),
+        builtin: 1,
+        created_at: Date.now(),
+      });
+    }
+  }
   const k: UpstreamKey = {
     id: generateId("uk"),
     provider_id: data.provider_id,

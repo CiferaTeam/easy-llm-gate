@@ -210,9 +210,30 @@ admin.post("/upstream-keys/:id/chat-test", async (c) => {
 
     const ct = resp.headers.get("content-type") || "";
     if (ct.includes("text/event-stream")) {
-      // Some proxies always return SSE regardless of stream:false
-      await resp.text();
-      return c.json({ ok: true, content: "连通正常 (SSE)" });
+      // Parse SSE stream to extract text content
+      const raw = await resp.text();
+      let text = "";
+      for (const line of raw.split("\n")) {
+        if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+          // Anthropic SSE
+          if (evt.type === "content_block_delta" && evt.delta?.text) {
+            text += evt.delta.text;
+          }
+          // Anthropic message_start with full content
+          if (evt.type === "message" && evt.content) {
+            for (const block of evt.content) {
+              if (block.type === "text" && block.text) text += block.text;
+            }
+          }
+          // OpenAI SSE
+          if (evt.choices?.[0]?.delta?.content) {
+            text += evt.choices[0].delta.content;
+          }
+        } catch {}
+      }
+      return c.json({ ok: true, content: text || "连通正常 (SSE)" });
     }
 
     const data = await resp.json();
