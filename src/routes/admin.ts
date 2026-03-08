@@ -309,7 +309,9 @@ admin.get("/prompt-cache/:upstreamKeyId/live", (c) => {
 
   return stream(c, async (s) => {
     while (true) {
-      const entries = getLiveEntriesByUpstreamKey(ukId);
+      const entries = getLiveEntriesByUpstreamKey(ukId).map(
+        ({ messages, ...rest }) => rest
+      );
       const cacheStats = getCacheStatsForKey(ukId);
       const reuse = getPrefixReuseRate();
       const payload = JSON.stringify({ entries, cacheStats, reuse });

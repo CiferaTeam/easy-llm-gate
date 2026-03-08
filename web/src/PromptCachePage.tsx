@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   fetchUpstreamKeys,
   fetchProviders,
@@ -33,12 +33,29 @@ interface LivePayload {
   reuse: { totalEntries: number; totalHits: number; reuseRate: number };
 }
 
+interface Message {
+  role: string;
+  content: any;
+}
+
 function timeAgo(ts: number): string {
   const sec = Math.floor((Date.now() - ts) / 1000);
   if (sec < 60) return `${sec}s ago`;
   if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
   return `${Math.floor(sec / 3600)}h ago`;
 }
+
+function formatContent(content: any): string {
+  if (typeof content === "string") return content;
+  return JSON.stringify(content, null, 2);
+}
+
+const ROLE_COLORS: Record<string, string> = {
+  system: "#f59e0b",
+  user: "#3b82f6",
+  assistant: "#22c55e",
+  tool: "#8b5cf6",
+};
 
 export function PromptCachePage() {
   const [upstreamKeys, setUpstreamKeys] = useState<UpstreamKey[]>([]);
@@ -47,6 +64,9 @@ export function PromptCachePage() {
   const [data, setData] = useState<LivePayload | null>(null);
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+
+  // Expand state: prefixHash → messages (loaded on demand)
+  const [expanded, setExpanded] = useState<Record<string, Message[] | "loading">>({});
 
   useEffect(() => {
     Promise.all([fetchUpstreamKeys(), fetchProviders()]).then(([uks, provs]) => {
@@ -61,6 +81,7 @@ export function PromptCachePage() {
     if (!selectedKeyId) return;
 
     setData(null);
+    setExpanded({});
     const es = new EventSource(`/api/prompt-cache/${selectedKeyId}/live`);
     esRef.current = es;
 
@@ -79,10 +100,35 @@ export function PromptCachePage() {
     };
   }, [selectedKeyId]);
 
+  const toggleExpand = async (prefixHash: string) => {
+    if (expanded[prefixHash]) {
+      // Collapse
+      setExpanded((prev) => {
+        const next = { ...prev };
+        delete next[prefixHash];
+        return next;
+      });
+      return;
+    }
+
+    // Fetch full entry with messages from JSON endpoint
+    setExpanded((prev) => ({ ...prev, [prefixHash]: "loading" }));
+    try {
+      const r = await fetch(`/api/prompt-cache/${selectedKeyId}`);
+      const payload = await r.json();
+      const entry = payload.entries.find(
+        (e: any) => e.prefixHash === prefixHash
+      );
+      setExpanded((prev) => ({
+        ...prev,
+        [prefixHash]: entry?.messages ?? [],
+      }));
+    } catch {
+      setExpanded((prev) => ({ ...prev, [prefixHash]: [] }));
+    }
+  };
+
   const selectedKey = upstreamKeys.find((k) => k.id === selectedKeyId);
-  const providerName = selectedKey
-    ? providers.find((p) => p.id === selectedKey.provider_id)?.name ?? ""
-    : "";
 
   const cacheHitRate =
     data?.cacheStats && data.cacheStats.totalRequests > 0
@@ -184,29 +230,65 @@ export function PromptCachePage() {
             <tbody>
               {data.entries
                 .sort((a, b) => b.updatedAt - a.updatedAt)
-                .map((entry) => (
-                  <tr key={entry.prefixHash}>
-                    <td>
-                      <code className="pc-hash">{entry.prefixHash}</code>
-                    </td>
-                    <td>
-                      <span className="badge badge-success">{entry.model}</span>
-                    </td>
-                    <td style={{ fontSize: 12 }}>{entry.gateKeyName}</td>
-                    <td>
-                      <span className={`pc-hit-count ${entry.hitCount > 5 ? "pc-hot" : ""}`}>
-                        {entry.hitCount}
-                      </span>
-                    </td>
-                    <td style={{ fontSize: 12 }}>{entry.totalTokens.toLocaleString()}</td>
-                    <td>
-                      <div className="pc-preview">{entry.suffixPreview || "-"}</div>
-                    </td>
-                    <td style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
-                      {timeAgo(entry.updatedAt)}
-                    </td>
-                  </tr>
-                ))}
+                .map((entry) => {
+                  const isExpanded = !!expanded[entry.prefixHash];
+                  const messages = expanded[entry.prefixHash];
+                  return (
+                    <>
+                      <tr key={entry.prefixHash}>
+                        <td>
+                          <code className="pc-hash">{entry.prefixHash}</code>
+                        </td>
+                        <td>
+                          <span className="badge badge-success">{entry.model}</span>
+                        </td>
+                        <td style={{ fontSize: 12 }}>{entry.gateKeyName}</td>
+                        <td>
+                          <span className={`pc-hit-count ${entry.hitCount > 5 ? "pc-hot" : ""}`}>
+                            {entry.hitCount}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 12 }}>{entry.totalTokens.toLocaleString()}</td>
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <div className="pc-preview">{entry.suffixPreview || "-"}</div>
+                            <button
+                              className="btn-outline btn-sm pc-expand-btn"
+                              onClick={() => toggleExpand(entry.prefixHash)}
+                            >
+                              {messages === "loading" ? "..." : isExpanded ? "收起" : "展开"}
+                            </button>
+                          </div>
+                        </td>
+                        <td style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
+                          {timeAgo(entry.updatedAt)}
+                        </td>
+                      </tr>
+                      {isExpanded && messages !== "loading" && (
+                        <tr key={`${entry.prefixHash}-detail`}>
+                          <td colSpan={7} style={{ padding: 0 }}>
+                            <div className="pc-messages">
+                              {(messages as Message[]).length === 0 && (
+                                <div className="pc-msg-empty">无消息内容</div>
+                              )}
+                              {(messages as Message[]).map((msg, i) => (
+                                <div key={i} className="pc-msg">
+                                  <span
+                                    className="pc-msg-role"
+                                    style={{ color: ROLE_COLORS[msg.role] ?? "var(--text-dim)" }}
+                                  >
+                                    {msg.role}
+                                  </span>
+                                  <pre className="pc-msg-content">{formatContent(msg.content)}</pre>
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  );
+                })}
             </tbody>
           </table>
         )}
