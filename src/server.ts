@@ -6,6 +6,7 @@ import { proxy } from "./routes/proxy.js";
 import "./db.js"; // ensure SQLite is initialized on startup
 import { connectRedis } from "./redis.js";
 import { startStats } from "./stats.js";
+import { startPromptCache } from "./prompt-cache.js";
 
 const app = new Hono();
 
@@ -25,6 +26,7 @@ app.route("/v1", proxy);
 async function main() {
   await connectRedis();
   startStats();
+  startPromptCache();
 
   serve({ fetch: app.fetch, port: PORT }, () => {
     console.log(`[llm-rate-gate] listening on http://localhost:${PORT}`);

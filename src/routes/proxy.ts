@@ -9,6 +9,7 @@ import {
   type Provider,
 } from "../store.js";
 import { recordRequest } from "../stats.js";
+import { recordPrompt, recordCacheUsage } from "../prompt-cache.js";
 
 const proxy = new Hono();
 
@@ -67,6 +68,17 @@ function extractTokensFromAnthropic(data: any): number {
   return (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
 }
 
+function extractAnthropicCacheTokens(data: any): {
+  creation: number;
+  read: number;
+} {
+  const u = data?.usage;
+  return {
+    creation: u?.cache_creation_input_tokens ?? 0,
+    read: u?.cache_read_input_tokens ?? 0,
+  };
+}
+
 // ── Stream helper (with stats recording) ──
 
 function proxyStreamWithStats(
@@ -74,7 +86,8 @@ function proxyStreamWithStats(
   resp: globalThis.Response,
   upstreamKeyId: string,
   gateKeyId: string,
-  tokenExtractor: (data: any) => number
+  tokenExtractor: (data: any) => number,
+  onChunkParsed?: (data: any) => void
 ) {
   c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
@@ -98,6 +111,7 @@ function proxyStreamWithStats(
             const parsed = JSON.parse(line.slice(6));
             const tokens = tokenExtractor(parsed);
             if (tokens > 0) totalTokens = tokens;
+            onChunkParsed?.(parsed);
           } catch {
             // not valid JSON, skip
           }
@@ -121,6 +135,18 @@ proxy.post("/chat/completions", async (c) => {
   const body = await c.req.json();
   const isStream = body.stream === true;
   const upstreamUrl = `${provider.base_url}/chat/completions`;
+
+  // Record prompt fingerprint
+  if (body.messages) {
+    recordPrompt({
+      messages: body.messages,
+      model: body.model ?? "unknown",
+      upstreamKeyId: key.id,
+      gateKeyId: gateKey.id,
+      gateKeyName: gateKey.name,
+      tokens: 0, // updated after response
+    });
+  }
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -164,6 +190,22 @@ proxy.post("/messages", async (c) => {
   const isStream = body.stream === true;
   const upstreamUrl = `${provider.base_url}/v1/messages`;
 
+  // Record prompt fingerprint (Anthropic uses system + messages)
+  const allMessages = [
+    ...(body.system ? [{ role: "system", content: body.system }] : []),
+    ...(body.messages ?? []),
+  ];
+  if (allMessages.length > 0) {
+    recordPrompt({
+      messages: allMessages,
+      model: body.model ?? "unknown",
+      upstreamKeyId: key.id,
+      gateKeyId: gateKey.id,
+      gateKeyName: gateKey.name,
+      tokens: 0,
+    });
+  }
+
   try {
     const resp = await fetch(upstreamUrl, {
       method: "POST",
@@ -185,11 +227,20 @@ proxy.post("/messages", async (c) => {
 
     const ct = resp.headers.get("content-type") || "";
     if ((isStream || ct.includes("text/event-stream")) && resp.body) {
-      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromAnthropic);
+      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromAnthropic, (parsed) => {
+        const cache = extractAnthropicCacheTokens(parsed);
+        if (cache.creation || cache.read) {
+          recordCacheUsage(key.id, cache.creation, cache.read);
+        }
+      });
     }
 
     const data = await resp.json();
     recordRequest(key.id, gateKey.id, extractTokensFromAnthropic(data));
+    const cache = extractAnthropicCacheTokens(data);
+    if (cache.creation || cache.read) {
+      recordCacheUsage(key.id, cache.creation, cache.read);
+    }
     return c.json(data);
   } catch (err: any) {
     return c.json(
