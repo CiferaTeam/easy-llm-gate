@@ -19,6 +19,7 @@ import {
   type GateKey,
 } from "./api";
 import { StatsPage } from "./StatsPage";
+import { PromptCachePage } from "./PromptCachePage";
 
 // ── Model Multi-Select with Search ──
 function ModelSelector({
@@ -109,7 +110,7 @@ function ModelSelector({
 }
 
 export function App() {
-  const [tab, setTab] = useState<"providers" | "gatekeys" | "stats">("stats");
+  const [tab, setTab] = useState<"providers" | "gatekeys" | "stats" | "promptcache">("stats");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [builtinProvs, setBuiltinProvs] = useState<BuiltinProvider[]>([]);
   const [keys, setKeys] = useState<UpstreamKey[]>([]);
@@ -316,6 +317,9 @@ export function App() {
       <div className="tabs">
         <button className={`tab ${tab === "stats" ? "active" : ""}`} onClick={() => setTab("stats")}>
           流量统计
+        </button>
+        <button className={`tab ${tab === "promptcache" ? "active" : ""}`} onClick={() => setTab("promptcache")}>
+          Prompt 观测
         </button>
         <button className={`tab ${tab === "providers" ? "active" : ""}`} onClick={() => setTab("providers")}>
           服务商 & Key
@@ -728,6 +732,8 @@ export function App() {
       )}
 
       {tab === "stats" && <StatsPage />}
+
+      {tab === "promptcache" && <PromptCachePage />}
     </div>
   );
 }
