@@ -138,7 +138,7 @@ admin.post("/upstream-keys/:id/test", async (c) => {
       const contentType = resp.headers.get("content-type") || "";
       if (contentType.includes("text/event-stream")) {
         // Some proxies always return SSE regardless of stream:false
-        const text = await resp.text();
+        await resp.text();
         return c.json({ ok: true, result: "连通正常 (SSE)" });
       }
       const data = await resp.json();
@@ -205,6 +205,13 @@ admin.post("/upstream-keys/:id/chat-test", async (c) => {
     if (!resp.ok) {
       const text = await resp.text();
       return c.json({ ok: false, status: resp.status, error: text });
+    }
+
+    const ct = resp.headers.get("content-type") || "";
+    if (ct.includes("text/event-stream")) {
+      // Some proxies always return SSE regardless of stream:false
+      await resp.text();
+      return c.json({ ok: true, content: "连通正常 (SSE)" });
     }
 
     const data = await resp.json();
