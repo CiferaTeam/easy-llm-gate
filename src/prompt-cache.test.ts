@@ -145,6 +145,38 @@ describe("prompt-cache", () => {
 
       expect(getLiveEntries()).toHaveLength(2);
     });
+
+    it("should create separate entries for same prefix on different upstream keys", () => {
+      const msgs = makeMessages(LONG_SYSTEM, "same question");
+      recordPrompt({
+        messages: msgs,
+        model: "gpt-4o",
+        upstreamKeyId: "uk1",
+        gateKeyId: "gk1",
+        gateKeyName: "gate",
+        tokens: 100,
+      });
+      recordPrompt({
+        messages: msgs,
+        model: "gpt-4o",
+        upstreamKeyId: "uk2",
+        gateKeyId: "gk1",
+        gateKeyName: "gate",
+        tokens: 200,
+      });
+
+      const live = getLiveEntries();
+      expect(live).toHaveLength(2);
+
+      const uk1Entry = live.find((e) => e.upstreamKeyId === "uk1")!;
+      const uk2Entry = live.find((e) => e.upstreamKeyId === "uk2")!;
+      expect(uk1Entry).toBeDefined();
+      expect(uk2Entry).toBeDefined();
+      expect(uk1Entry.totalTokens).toBe(100);
+      expect(uk2Entry.totalTokens).toBe(200);
+      expect(uk1Entry.hitCount).toBe(1);
+      expect(uk2Entry.hitCount).toBe(1);
+    });
   });
 
   // ── TTL & sweep ──

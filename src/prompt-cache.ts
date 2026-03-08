@@ -108,8 +108,12 @@ export function recordPrompt(opts: {
   tokens: number;
 }) {
   const hash = hashPrefix(opts.messages);
+  // Composite key ensures entries are scoped per upstream key, not globally.
+  // Without this, two upstream keys sharing the same prompt prefix would merge
+  // into one entry, breaking per-upstream-key statistics.
+  const entryKey = `${opts.upstreamKeyId}:${hash}`;
   const now = Date.now();
-  const existing = entries.get(hash);
+  const existing = entries.get(entryKey);
 
   if (existing) {
     existing.messages = opts.messages;
@@ -118,7 +122,7 @@ export function recordPrompt(opts: {
     existing.totalTokens += opts.tokens;
     existing.updatedAt = now;
   } else {
-    entries.set(hash, {
+    entries.set(entryKey, {
       prefixHash: hash,
       messages: opts.messages,
       model: opts.model,
@@ -164,6 +168,20 @@ export function sweep(now?: number) {
 /** Get all live entries (for admin API / UI). */
 export function getLiveEntries(): PromptEntry[] {
   return [...entries.values()];
+}
+
+/** Get live entries filtered by upstream key. */
+export function getLiveEntriesByUpstreamKey(upstreamKeyId: string): PromptEntry[] {
+  const result: PromptEntry[] = [];
+  for (const entry of entries.values()) {
+    if (entry.upstreamKeyId === upstreamKeyId) result.push(entry);
+  }
+  return result;
+}
+
+/** Get cache stats for a specific upstream key. */
+export function getCacheStatsForKey(upstreamKeyId: string): CacheStats {
+  return cacheStats.get(upstreamKeyId) ?? { cacheCreationTokens: 0, cacheReadTokens: 0, totalRequests: 0 };
 }
 
 /** Get cache stats per upstream key. */

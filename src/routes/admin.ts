@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { stream } from "hono/streaming";
 import {
   getProviders,
   getProvider,
@@ -16,6 +17,11 @@ import {
 } from "../store.js";
 import { builtinProviders } from "../builtin-providers.js";
 import { getTrafficSnapshots, getStatsUpstreamKeyIds } from "../stats.js";
+import {
+  getLiveEntriesByUpstreamKey,
+  getCacheStatsForKey,
+  getPrefixReuseRate,
+} from "../prompt-cache.js";
 
 const admin = new Hono();
 
@@ -281,6 +287,36 @@ admin.get("/stats/upstream-keys/:id/traffic", async (c) => {
   const to = Number(c.req.query("to") || Math.floor(Date.now() / 1000));
   const snapshots = await getTrafficSnapshots(id, from, to);
   return c.json(snapshots);
+});
+
+// ── Prompt Cache Observation ──
+
+admin.get("/prompt-cache/:upstreamKeyId", (c) => {
+  const ukId = c.req.param("upstreamKeyId");
+  const entries = getLiveEntriesByUpstreamKey(ukId);
+  const cacheStats = getCacheStatsForKey(ukId);
+  const reuse = getPrefixReuseRate();
+  return c.json({ entries, cacheStats, reuse });
+});
+
+admin.get("/prompt-cache/:upstreamKeyId/live", (c) => {
+  const ukId = c.req.param("upstreamKeyId");
+  const intervalMs = 2000;
+
+  c.header("Content-Type", "text/event-stream");
+  c.header("Cache-Control", "no-cache");
+  c.header("Connection", "keep-alive");
+
+  return stream(c, async (s) => {
+    while (true) {
+      const entries = getLiveEntriesByUpstreamKey(ukId);
+      const cacheStats = getCacheStatsForKey(ukId);
+      const reuse = getPrefixReuseRate();
+      const payload = JSON.stringify({ entries, cacheStats, reuse });
+      await s.write(`data: ${payload}\n\n`);
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  });
 });
 
 export { admin };
