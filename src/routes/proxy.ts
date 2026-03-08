@@ -8,6 +8,7 @@ import {
   type UpstreamKey,
   type Provider,
 } from "../store.js";
+import { recordRequest } from "../stats.js";
 
 const proxy = new Hono();
 
@@ -54,9 +55,27 @@ async function resolveUpstream(
   return { gateKey, ...match };
 }
 
-// ── Stream helper ──
+// ── Token extraction helpers ──
 
-async function proxyStream(c: Context, resp: globalThis.Response) {
+function extractTokensFromOpenAI(data: any): number {
+  return data?.usage?.total_tokens ?? 0;
+}
+
+function extractTokensFromAnthropic(data: any): number {
+  const u = data?.usage;
+  if (!u) return 0;
+  return (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
+}
+
+// ── Stream helper (with stats recording) ──
+
+function proxyStreamWithStats(
+  c: Context,
+  resp: globalThis.Response,
+  upstreamKeyId: string,
+  gateKeyId: string,
+  tokenExtractor: (data: any) => number
+) {
   c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
   c.header("Connection", "keep-alive");
@@ -64,15 +83,31 @@ async function proxyStream(c: Context, resp: globalThis.Response) {
   return stream(c, async (s) => {
     const reader = resp.body!.getReader();
     const decoder = new TextDecoder();
+    let totalTokens = 0;
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        await s.write(decoder.decode(value, { stream: true }));
+        const chunk = decoder.decode(value, { stream: true });
+        await s.write(chunk);
+
+        // Try to extract usage from SSE chunks (typically in the last chunk)
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+          try {
+            const parsed = JSON.parse(line.slice(6));
+            const tokens = tokenExtractor(parsed);
+            if (tokens > 0) totalTokens = tokens;
+          } catch {
+            // not valid JSON, skip
+          }
+        }
       }
     } finally {
       reader.cancel();
     }
+    // Record with best-effort token count (stream may not report usage)
+    recordRequest(upstreamKeyId, gateKeyId, totalTokens);
   });
 }
 
@@ -81,7 +116,7 @@ async function proxyStream(c: Context, resp: globalThis.Response) {
 proxy.post("/chat/completions", async (c) => {
   const result = await resolveUpstream(c);
   if (result instanceof Response) return result;
-  const { key, provider } = result;
+  const { gateKey, key, provider } = result;
 
   const body = await c.req.json();
   const isStream = body.stream === true;
@@ -106,8 +141,13 @@ proxy.post("/chat/completions", async (c) => {
     }
 
     const ct = resp.headers.get("content-type") || "";
-    if ((isStream || ct.includes("text/event-stream")) && resp.body) return proxyStream(c, resp);
-    return c.json(await resp.json());
+    if ((isStream || ct.includes("text/event-stream")) && resp.body) {
+      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromOpenAI);
+    }
+
+    const data = await resp.json();
+    recordRequest(key.id, gateKey.id, extractTokensFromOpenAI(data));
+    return c.json(data);
   } catch (err: any) {
     return c.json({ error: { message: err.message, type: "proxy_error" } }, 502);
   }
@@ -118,7 +158,7 @@ proxy.post("/chat/completions", async (c) => {
 proxy.post("/messages", async (c) => {
   const result = await resolveUpstream(c, "anthropic");
   if (result instanceof Response) return result;
-  const { key, provider } = result;
+  const { gateKey, key, provider } = result;
 
   const body = await c.req.json();
   const isStream = body.stream === true;
@@ -144,8 +184,13 @@ proxy.post("/messages", async (c) => {
     }
 
     const ct = resp.headers.get("content-type") || "";
-    if ((isStream || ct.includes("text/event-stream")) && resp.body) return proxyStream(c, resp);
-    return c.json(await resp.json());
+    if ((isStream || ct.includes("text/event-stream")) && resp.body) {
+      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromAnthropic);
+    }
+
+    const data = await resp.json();
+    recordRequest(key.id, gateKey.id, extractTokensFromAnthropic(data));
+    return c.json(data);
   } catch (err: any) {
     return c.json(
       { type: "error", error: { type: "proxy_error", message: err.message } },

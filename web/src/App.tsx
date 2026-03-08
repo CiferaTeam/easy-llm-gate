@@ -18,6 +18,7 @@ import {
   type UpstreamKey,
   type GateKey,
 } from "./api";
+import { StatsPage } from "./StatsPage";
 
 // ── Model Multi-Select with Search ──
 function ModelSelector({
@@ -108,7 +109,7 @@ function ModelSelector({
 }
 
 export function App() {
-  const [tab, setTab] = useState<"providers" | "gatekeys">("providers");
+  const [tab, setTab] = useState<"providers" | "gatekeys" | "stats">("providers");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [builtinProvs, setBuiltinProvs] = useState<BuiltinProvider[]>([]);
   const [keys, setKeys] = useState<UpstreamKey[]>([]);
@@ -318,6 +319,9 @@ export function App() {
         </button>
         <button className={`tab ${tab === "gatekeys" ? "active" : ""}`} onClick={() => setTab("gatekeys")}>
           Gate Key
+        </button>
+        <button className={`tab ${tab === "stats" ? "active" : ""}`} onClick={() => setTab("stats")}>
+          流量统计
         </button>
       </div>
 
@@ -722,6 +726,8 @@ export function App() {
           )}
         </>
       )}
+
+      {tab === "stats" && <StatsPage />}
     </div>
   );
 }

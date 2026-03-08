@@ -15,6 +15,7 @@ import {
   maskKey,
 } from "../store.js";
 import { builtinProviders } from "../builtin-providers.js";
+import { getTrafficSnapshots, getStatsUpstreamKeyIds } from "../stats.js";
 
 const admin = new Hono();
 
@@ -237,6 +238,21 @@ admin.post("/gate-keys", async (c) => {
 admin.delete("/gate-keys/:id", async (c) => {
   const ok = await deleteGateKey(c.req.param("id"));
   return ok ? c.json({ ok: true }) : c.json({ error: "not found" }, 404);
+});
+
+// ── Stats ──
+
+admin.get("/stats/upstream-keys", async (c) => {
+  const ids = await getStatsUpstreamKeyIds();
+  return c.json(ids);
+});
+
+admin.get("/stats/upstream-keys/:id/traffic", async (c) => {
+  const id = c.req.param("id");
+  const from = Number(c.req.query("from") || 0);
+  const to = Number(c.req.query("to") || Math.floor(Date.now() / 1000));
+  const snapshots = await getTrafficSnapshots(id, from, to);
+  return c.json(snapshots);
 });
 
 export { admin };

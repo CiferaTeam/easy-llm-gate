@@ -142,3 +142,31 @@ export async function deleteGateKey(id: string): Promise<void> {
   const r = await fetch(`/api/gate-keys/${id}`, { method: "DELETE" });
   if (!r.ok) throw new Error(await r.text());
 }
+
+// ── Stats ──
+
+export interface TrafficSnapshot {
+  ts: number;
+  rpmLimit: number;
+  rpmActual: number;
+  rpmByGate: Record<string, number>;
+  tpmLimit: number;
+  tpmActual: number;
+  tpmByGate: Record<string, number>;
+}
+
+export async function fetchStatsUpstreamKeyIds(): Promise<string[]> {
+  const r = await fetch("/api/stats/upstream-keys");
+  return r.json();
+}
+
+export async function fetchTrafficSnapshots(
+  upstreamKeyId: string,
+  from: number,
+  to: number
+): Promise<TrafficSnapshot[]> {
+  const r = await fetch(
+    `/api/stats/upstream-keys/${upstreamKeyId}/traffic?from=${from}&to=${to}`
+  );
+  return r.json();
+}

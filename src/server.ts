@@ -4,6 +4,8 @@ import { cors } from "hono/cors";
 import { admin } from "./routes/admin.js";
 import { proxy } from "./routes/proxy.js";
 import "./db.js"; // ensure SQLite is initialized on startup
+import { connectRedis } from "./redis.js";
+import { startStats } from "./stats.js";
 
 const app = new Hono();
 
@@ -20,8 +22,18 @@ app.route("/api", admin);
 app.route("/v1", proxy);
 
 // Start server
-serve({ fetch: app.fetch, port: PORT }, () => {
-  console.log(`[llm-rate-gate] listening on http://localhost:${PORT}`);
-  console.log(`  AI API:    http://localhost:${PORT}/v1/`);
-  console.log(`  Admin API: http://localhost:${PORT}/api/`);
+async function main() {
+  await connectRedis();
+  startStats();
+
+  serve({ fetch: app.fetch, port: PORT }, () => {
+    console.log(`[llm-rate-gate] listening on http://localhost:${PORT}`);
+    console.log(`  AI API:    http://localhost:${PORT}/v1/`);
+    console.log(`  Admin API: http://localhost:${PORT}/api/`);
+  });
+}
+
+main().catch((err) => {
+  console.error("[llm-rate-gate] failed to start:", err);
+  process.exit(1);
 });
