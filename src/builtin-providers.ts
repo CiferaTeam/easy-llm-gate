@@ -67,8 +67,8 @@ export const builtinProviders: BuiltinProvider[] = [
     type: "anthropic",
     base_url: "https://api.minimaxi.com/anthropic",
     models: [
+      "MiniMax-M2.5-highspeed",
       "MiniMax-M1",
-      "MiniMax-Text-01",
     ],
   },
   {

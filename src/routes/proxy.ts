@@ -13,6 +13,39 @@ import { recordPrompt, recordCacheUsage } from "../prompt-cache.js";
 
 const proxy = new Hono();
 
+// ── Model resolution with sticky cache ──
+
+const MODEL_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const modelCache = new Map<string, { model: string; ts: number }>();
+
+/**
+ * Resolve the actual model to use for an upstream key.
+ * - If provider.models is empty, pass through the original model (backward compat).
+ * - If requestModel is in provider.models, use it.
+ * - Otherwise (including "auto"), pick provider.models[0].
+ * Results are cached per upstream_key_id:requestModel for stability (prompt cache friendly).
+ */
+function resolveModel(
+  upstreamKeyId: string,
+  providerModels: string[],
+  requestModel: string
+): string {
+  if (providerModels.length === 0) return requestModel;
+
+  const cacheKey = `${upstreamKeyId}:${requestModel}`;
+  const cached = modelCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < MODEL_CACHE_TTL) {
+    return cached.model;
+  }
+
+  const resolved = providerModels.includes(requestModel)
+    ? requestModel
+    : providerModels[0];
+
+  modelCache.set(cacheKey, { model: resolved, ts: Date.now() });
+  return resolved;
+}
+
 // ── Auth helper ──
 
 function extractApiKey(c: Context): string | null {
@@ -136,6 +169,10 @@ proxy.post("/chat/completions", async (c) => {
   const isStream = body.stream === true;
   const upstreamUrl = `${provider.base_url}/chat/completions`;
 
+  // Resolve model
+  const originalModel = body.model ?? "unknown";
+  body.model = resolveModel(key.id, provider.models, originalModel);
+
   // Record prompt fingerprint
   if (body.messages) {
     recordPrompt({
@@ -189,6 +226,10 @@ proxy.post("/messages", async (c) => {
   const body = await c.req.json();
   const isStream = body.stream === true;
   const upstreamUrl = `${provider.base_url}/v1/messages`;
+
+  // Resolve model
+  const originalModel = body.model ?? "unknown";
+  body.model = resolveModel(key.id, provider.models, originalModel);
 
   // Record prompt fingerprint (Anthropic uses system + messages)
   const allMessages = [
