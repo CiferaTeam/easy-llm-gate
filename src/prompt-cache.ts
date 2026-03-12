@@ -32,6 +32,8 @@ export interface PromptEntry {
   totalTokens: number;
   createdAt: number;
   updatedAt: number;
+  /** Latest rate-limiter request ID for this entry */
+  lastRequestId?: string;
 }
 
 export interface CacheStats {
@@ -106,6 +108,7 @@ export function recordPrompt(opts: {
   gateKeyId: string;
   gateKeyName: string;
   tokens: number;
+  requestId?: string;
 }) {
   const hash = hashPrefix(opts.messages);
   // Composite key ensures entries are scoped per upstream key, not globally.
@@ -121,6 +124,7 @@ export function recordPrompt(opts: {
     existing.hitCount++;
     existing.totalTokens += opts.tokens;
     existing.updatedAt = now;
+    if (opts.requestId) existing.lastRequestId = opts.requestId;
   } else {
     entries.set(entryKey, {
       prefixHash: hash,
@@ -134,6 +138,7 @@ export function recordPrompt(opts: {
       totalTokens: opts.tokens,
       createdAt: now,
       updatedAt: now,
+      lastRequestId: opts.requestId,
     });
   }
 }

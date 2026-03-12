@@ -315,11 +315,11 @@ export function App() {
       <h1>LLM Rate Gate</h1>
 
       <div className="tabs">
-        <button className={`tab ${tab === "stats" ? "active" : ""}`} onClick={() => setTab("stats")}>
-          流量统计
-        </button>
         <button className={`tab ${tab === "promptcache" ? "active" : ""}`} onClick={() => setTab("promptcache")}>
           Prompt 观测
+        </button>
+        <button className={`tab ${tab === "stats" ? "active" : ""}`} onClick={() => setTab("stats")}>
+          流量统计
         </button>
         <button className={`tab ${tab === "providers" ? "active" : ""}`} onClick={() => setTab("providers")}>
           服务商 & Key
@@ -400,7 +400,7 @@ export function App() {
                 <thead>
                   <tr>
                     <th>名称</th>
-                    <th>类型</th>
+                    <th>协议类型</th>
                     <th>Base URL</th>
                     <th>模型</th>
                     <th>操作</th>

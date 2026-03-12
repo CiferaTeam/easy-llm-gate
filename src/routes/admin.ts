@@ -22,6 +22,7 @@ import {
   getCacheStatsForKey,
   getPrefixReuseRate,
 } from "../prompt-cache.js";
+import { getRequestStatus, getBucketStats } from "../rate-limiter.js";
 
 const admin = new Hono();
 
@@ -310,11 +311,18 @@ admin.get("/prompt-cache/:upstreamKeyId/live", (c) => {
   return stream(c, async (s) => {
     while (true) {
       const entries = getLiveEntriesByUpstreamKey(ukId).map(
-        ({ messages, ...rest }) => rest
+        ({ messages, ...rest }) => ({
+          ...rest,
+          // Resolve current request status from rate limiter
+          requestStatus: rest.lastRequestId
+            ? getRequestStatus(rest.lastRequestId)
+            : null,
+        })
       );
       const cacheStats = getCacheStatsForKey(ukId);
       const reuse = getPrefixReuseRate();
-      const payload = JSON.stringify({ entries, cacheStats, reuse });
+      const bucket = getBucketStats(ukId);
+      const payload = JSON.stringify({ entries, cacheStats, reuse, bucket });
       await s.write(`data: ${payload}\n\n`);
       await new Promise((r) => setTimeout(r, intervalMs));
     }

@@ -10,6 +10,12 @@ import {
 } from "../store.js";
 import { recordRequest } from "../stats.js";
 import { recordPrompt, recordPromptResponse, recordCacheUsage } from "../prompt-cache.js";
+import {
+  acquire,
+  generateRequestId,
+  updateStatus,
+  releaseRequest,
+} from "../rate-limiter.js";
 
 const proxy = new Hono();
 
@@ -120,9 +126,11 @@ function proxyStreamWithStats(
   upstreamKeyId: string,
   gateKeyId: string,
   tokenExtractor: (data: any) => number,
+  requestId: string,
   onChunkParsed?: (data: any) => void,
   onStreamEnd?: () => void
 ) {
+  updateStatus(requestId, "streaming");
   c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
   c.header("Connection", "keep-alive");
@@ -156,6 +164,7 @@ function proxyStreamWithStats(
     }
     // Record with best-effort token count (stream may not report usage)
     recordRequest(upstreamKeyId, gateKeyId, totalTokens);
+    releaseRequest(requestId, totalTokens);
     onStreamEnd?.();
   });
 }
@@ -175,7 +184,8 @@ proxy.post("/chat/completions", async (c) => {
   const originalModel = body.model ?? "unknown";
   body.model = resolveModel(key.id, provider.models, originalModel);
 
-  // Record prompt fingerprint
+  // Record prompt fingerprint (before acquire so entry is visible while queued)
+  const requestId = generateRequestId();
   if (body.messages) {
     recordPrompt({
       messages: body.messages,
@@ -183,9 +193,13 @@ proxy.post("/chat/completions", async (c) => {
       upstreamKeyId: key.id,
       gateKeyId: gateKey.id,
       gateKeyName: gateKey.name,
-      tokens: 0, // updated after response
+      tokens: 0,
+      requestId,
     });
   }
+
+  // Rate limit: acquire slot (may queue — holds HTTP connection)
+  await acquire(key.id, requestId, gateKey.id, gateKey.name, body.model);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -198,6 +212,7 @@ proxy.post("/chat/completions", async (c) => {
     });
 
     if (!resp.ok) {
+      releaseRequest(requestId, 0);
       const errText = await resp.text();
       return c.json(
         { error: { message: `Upstream error: ${resp.status} ${errText}`, type: "upstream_error" } },
@@ -209,7 +224,7 @@ proxy.post("/chat/completions", async (c) => {
     if ((isStream || ct.includes("text/event-stream")) && resp.body) {
       // Accumulate streamed assistant content for prompt recording
       let streamedContent = "";
-      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromOpenAI, (parsed) => {
+      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromOpenAI, requestId, (parsed) => {
         const delta = parsed?.choices?.[0]?.delta;
         if (delta?.content) streamedContent += delta.content;
       }, () => {
@@ -224,7 +239,9 @@ proxy.post("/chat/completions", async (c) => {
     }
 
     const data = await resp.json();
-    recordRequest(key.id, gateKey.id, extractTokensFromOpenAI(data));
+    const tokens = extractTokensFromOpenAI(data);
+    recordRequest(key.id, gateKey.id, tokens);
+    releaseRequest(requestId, tokens);
     // Record assistant response
     const choice = data?.choices?.[0]?.message;
     if (choice) {
@@ -236,6 +253,7 @@ proxy.post("/chat/completions", async (c) => {
     }
     return c.json(data);
   } catch (err: any) {
+    releaseRequest(requestId, 0);
     return c.json({ error: { message: err.message, type: "proxy_error" } }, 502);
   }
 });
@@ -255,7 +273,8 @@ proxy.post("/messages", async (c) => {
   const originalModel = body.model ?? "unknown";
   body.model = resolveModel(key.id, provider.models, originalModel);
 
-  // Record prompt fingerprint (Anthropic uses system + messages)
+  // Record prompt fingerprint before acquire so entry is visible while queued
+  const requestId = generateRequestId();
   const allMessages = [
     ...(body.system ? [{ role: "system", content: body.system }] : []),
     ...(body.messages ?? []),
@@ -268,8 +287,12 @@ proxy.post("/messages", async (c) => {
       gateKeyId: gateKey.id,
       gateKeyName: gateKey.name,
       tokens: 0,
+      requestId,
     });
   }
+
+  // Rate limit: acquire slot (may queue — holds HTTP connection)
+  await acquire(key.id, requestId, gateKey.id, gateKey.name, body.model);
 
   try {
     const resp = await fetch(upstreamUrl, {
@@ -283,6 +306,7 @@ proxy.post("/messages", async (c) => {
     });
 
     if (!resp.ok) {
+      releaseRequest(requestId, 0);
       const errText = await resp.text();
       return c.json(
         { type: "error", error: { type: "upstream_error", message: `Upstream error: ${resp.status} ${errText}` } },
@@ -294,7 +318,7 @@ proxy.post("/messages", async (c) => {
     if ((isStream || ct.includes("text/event-stream")) && resp.body) {
       // Accumulate streamed assistant content for prompt recording
       let streamedContent = "";
-      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromAnthropic, (parsed) => {
+      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromAnthropic, requestId, (parsed) => {
         const cache = extractAnthropicCacheTokens(parsed);
         if (cache.creation || cache.read) {
           recordCacheUsage(key.id, cache.creation, cache.read);
@@ -315,7 +339,9 @@ proxy.post("/messages", async (c) => {
     }
 
     const data = await resp.json();
-    recordRequest(key.id, gateKey.id, extractTokensFromAnthropic(data));
+    const tokens = extractTokensFromAnthropic(data);
+    recordRequest(key.id, gateKey.id, tokens);
+    releaseRequest(requestId, tokens);
     const cache = extractAnthropicCacheTokens(data);
     if (cache.creation || cache.read) {
       recordCacheUsage(key.id, cache.creation, cache.read);
@@ -336,6 +362,7 @@ proxy.post("/messages", async (c) => {
     }
     return c.json(data);
   } catch (err: any) {
+    releaseRequest(requestId, 0);
     return c.json(
       { type: "error", error: { type: "proxy_error", message: err.message } },
       502

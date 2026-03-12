@@ -19,6 +19,9 @@ interface PromptEntry {
   totalTokens: number;
   createdAt: number;
   updatedAt: number;
+  lastRequestId?: string;
+  /** Resolved from rate limiter: null = completed/idle */
+  requestStatus: "queued" | "executing" | "streaming" | null;
 }
 
 interface CacheStats {
@@ -27,10 +30,16 @@ interface CacheStats {
   totalRequests: number;
 }
 
+interface BucketStats {
+  rpm: { limit: number; available: number; queued: number };
+  tpm: { limit: number; used: number };
+}
+
 interface LivePayload {
   entries: PromptEntry[];
   cacheStats: CacheStats;
   reuse: { totalEntries: number; totalHits: number; reuseRate: number };
+  bucket: BucketStats | null;
 }
 
 interface Message {
@@ -56,6 +65,56 @@ const ROLE_COLORS: Record<string, string> = {
   assistant: "#22c55e",
   tool: "#8b5cf6",
 };
+
+function StatusBadge({ status }: { status: PromptEntry["requestStatus"] }) {
+  if (!status) return <span className="q-badge q-badge-done">已完成</span>;
+  const cls =
+    status === "queued"
+      ? "q-badge-queued"
+      : status === "executing"
+      ? "q-badge-executing"
+      : "q-badge-streaming";
+  const label =
+    status === "queued"
+      ? "排队中"
+      : status === "executing"
+      ? "请求中"
+      : "流式传输";
+  return <span className={`q-badge ${cls}`}>{label}</span>;
+}
+
+function GaugeBar({
+  label,
+  value,
+  max,
+  extra,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  extra?: string;
+}) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  const color =
+    pct > 90 ? "var(--danger)" : pct > 70 ? "#eab308" : "var(--accent)";
+  return (
+    <div className="q-gauge">
+      <div className="q-gauge-header">
+        <span className="q-gauge-label">{label}</span>
+        <span className="q-gauge-value">
+          {value.toLocaleString()} / {max.toLocaleString()}
+          {extra ? ` ${extra}` : ""}
+        </span>
+      </div>
+      <div className="q-gauge-track">
+        <div
+          className="q-gauge-fill"
+          style={{ width: `${pct}%`, background: color }}
+        />
+      </div>
+    </div>
+  );
+}
 
 export function PromptCachePage() {
   const [upstreamKeys, setUpstreamKeys] = useState<UpstreamKey[]>([]);
@@ -167,6 +226,29 @@ export function PromptCachePage() {
         </div>
       </div>
 
+      {/* Bucket gauges — rate limit status */}
+      {selectedKey && data?.bucket && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="q-gauges">
+            <GaugeBar
+              label="RPM"
+              value={data.bucket.rpm.limit - data.bucket.rpm.available}
+              max={data.bucket.rpm.limit}
+              extra={
+                data.bucket.rpm.queued > 0
+                  ? `(${data.bucket.rpm.queued} 排队)`
+                  : undefined
+              }
+            />
+            <GaugeBar
+              label="TPM"
+              value={data.bucket.tpm.used}
+              max={data.bucket.tpm.limit}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Summary cards */}
       {selectedKey && (
         <div className="pc-summary">
@@ -218,6 +300,7 @@ export function PromptCachePage() {
           <table>
             <thead>
               <tr>
+                <th>状态</th>
                 <th>前缀指纹</th>
                 <th>模型</th>
                 <th>Gate Key</th>
@@ -229,13 +312,22 @@ export function PromptCachePage() {
             </thead>
             <tbody>
               {data.entries
-                .sort((a, b) => b.updatedAt - a.updatedAt)
+                .sort((a, b) => {
+                  // Active requests first, then by updatedAt desc
+                  const aActive = a.requestStatus ? 1 : 0;
+                  const bActive = b.requestStatus ? 1 : 0;
+                  if (aActive !== bActive) return bActive - aActive;
+                  return b.updatedAt - a.updatedAt;
+                })
                 .map((entry) => {
                   const isExpanded = !!expanded[entry.prefixHash];
                   const messages = expanded[entry.prefixHash];
                   return (
                     <>
                       <tr key={entry.prefixHash}>
+                        <td>
+                          <StatusBadge status={entry.requestStatus} />
+                        </td>
                         <td>
                           <code className="pc-hash">{entry.prefixHash}</code>
                         </td>
@@ -266,7 +358,7 @@ export function PromptCachePage() {
                       </tr>
                       {isExpanded && messages !== "loading" && (
                         <tr key={`${entry.prefixHash}-detail`}>
-                          <td colSpan={7} style={{ padding: 0 }}>
+                          <td colSpan={8} style={{ padding: 0 }}>
                             <div className="pc-messages">
                               {(messages as Message[]).length === 0 && (
                                 <div className="pc-msg-empty">无消息内容</div>

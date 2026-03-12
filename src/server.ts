@@ -7,6 +7,7 @@ import "./db.js"; // ensure SQLite is initialized on startup
 import { connectRedis } from "./redis.js";
 import { startStats } from "./stats.js";
 import { startPromptCache } from "./prompt-cache.js";
+import { startRateLimiter } from "./rate-limiter.js";
 
 const app = new Hono();
 
@@ -27,6 +28,7 @@ async function main() {
   await connectRedis();
   startStats();
   startPromptCache();
+  startRateLimiter();
 
   serve({ fetch: app.fetch, hostname: "0.0.0.0", port: PORT }, () => {
     console.log(`[llm-rate-gate] listening on http://0.0.0.0:${PORT}`);

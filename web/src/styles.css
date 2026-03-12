@@ -440,3 +440,75 @@ td { padding: 8px; border-bottom: 1px solid var(--border); }
   font-size: 12px;
   padding: 16px 0;
 }
+
+/* ── Queue page ── */
+
+.q-gauges {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.q-gauge {
+  flex: 1;
+}
+
+.q-gauge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.q-gauge-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.q-gauge-value {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.q-gauge-track {
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.q-gauge-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.q-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.q-badge-queued {
+  background: #eab30822;
+  color: #eab308;
+}
+
+.q-badge-executing {
+  background: #6366f122;
+  color: var(--accent);
+}
+
+.q-badge-streaming {
+  background: #22c55e22;
+  color: var(--success);
+}
+
+.q-badge-done {
+  background: #8b8fa315;
+  color: var(--text-dim);
+}
