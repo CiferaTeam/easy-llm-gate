@@ -9,7 +9,7 @@ import {
   type Provider,
 } from "../store.js";
 import { recordRequest } from "../stats.js";
-import { recordPrompt, recordCacheUsage } from "../prompt-cache.js";
+import { recordPrompt, recordPromptResponse, recordCacheUsage } from "../prompt-cache.js";
 
 const proxy = new Hono();
 
@@ -120,7 +120,8 @@ function proxyStreamWithStats(
   upstreamKeyId: string,
   gateKeyId: string,
   tokenExtractor: (data: any) => number,
-  onChunkParsed?: (data: any) => void
+  onChunkParsed?: (data: any) => void,
+  onStreamEnd?: () => void
 ) {
   c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
@@ -155,6 +156,7 @@ function proxyStreamWithStats(
     }
     // Record with best-effort token count (stream may not report usage)
     recordRequest(upstreamKeyId, gateKeyId, totalTokens);
+    onStreamEnd?.();
   });
 }
 
@@ -205,11 +207,33 @@ proxy.post("/chat/completions", async (c) => {
 
     const ct = resp.headers.get("content-type") || "";
     if ((isStream || ct.includes("text/event-stream")) && resp.body) {
-      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromOpenAI);
+      // Accumulate streamed assistant content for prompt recording
+      let streamedContent = "";
+      return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromOpenAI, (parsed) => {
+        const delta = parsed?.choices?.[0]?.delta;
+        if (delta?.content) streamedContent += delta.content;
+      }, () => {
+        if (streamedContent) {
+          recordPromptResponse({
+            messages: body.messages,
+            upstreamKeyId: key.id,
+            assistantMessage: { role: "assistant", content: streamedContent },
+          });
+        }
+      });
     }
 
     const data = await resp.json();
     recordRequest(key.id, gateKey.id, extractTokensFromOpenAI(data));
+    // Record assistant response
+    const choice = data?.choices?.[0]?.message;
+    if (choice) {
+      recordPromptResponse({
+        messages: body.messages,
+        upstreamKeyId: key.id,
+        assistantMessage: choice,
+      });
+    }
     return c.json(data);
   } catch (err: any) {
     return c.json({ error: { message: err.message, type: "proxy_error" } }, 502);
@@ -268,10 +292,24 @@ proxy.post("/messages", async (c) => {
 
     const ct = resp.headers.get("content-type") || "";
     if ((isStream || ct.includes("text/event-stream")) && resp.body) {
+      // Accumulate streamed assistant content for prompt recording
+      let streamedContent = "";
       return proxyStreamWithStats(c, resp, key.id, gateKey.id, extractTokensFromAnthropic, (parsed) => {
         const cache = extractAnthropicCacheTokens(parsed);
         if (cache.creation || cache.read) {
           recordCacheUsage(key.id, cache.creation, cache.read);
+        }
+        // Anthropic streams content_block_delta with text
+        if (parsed?.type === "content_block_delta" && parsed?.delta?.text) {
+          streamedContent += parsed.delta.text;
+        }
+      }, () => {
+        if (streamedContent) {
+          recordPromptResponse({
+            messages: allMessages,
+            upstreamKeyId: key.id,
+            assistantMessage: { role: "assistant", content: streamedContent },
+          });
         }
       });
     }
@@ -281,6 +319,20 @@ proxy.post("/messages", async (c) => {
     const cache = extractAnthropicCacheTokens(data);
     if (cache.creation || cache.read) {
       recordCacheUsage(key.id, cache.creation, cache.read);
+    }
+    // Record assistant response
+    if (data?.content) {
+      const textParts = data.content
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text)
+        .join("");
+      if (textParts) {
+        recordPromptResponse({
+          messages: allMessages,
+          upstreamKeyId: key.id,
+          assistantMessage: { role: "assistant", content: textParts },
+        });
+      }
     }
     return c.json(data);
   } catch (err: any) {

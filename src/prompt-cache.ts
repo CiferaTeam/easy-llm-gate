@@ -138,6 +138,21 @@ export function recordPrompt(opts: {
   }
 }
 
+/** Append assistant response to an existing prompt entry. */
+export function recordPromptResponse(opts: {
+  messages: any[];
+  upstreamKeyId: string;
+  assistantMessage: any;
+}) {
+  const hash = hashPrefix(opts.messages);
+  const entryKey = `${opts.upstreamKeyId}:${hash}`;
+  const entry = entries.get(entryKey);
+  if (entry) {
+    entry.messages.push(opts.assistantMessage);
+    entry.updatedAt = Date.now();
+  }
+}
+
 /** Record Anthropic cache usage from response. */
 export function recordCacheUsage(
   upstreamKeyId: string,

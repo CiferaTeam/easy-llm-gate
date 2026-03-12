@@ -28,10 +28,10 @@ async function main() {
   startStats();
   startPromptCache();
 
-  serve({ fetch: app.fetch, port: PORT }, () => {
-    console.log(`[llm-rate-gate] listening on http://localhost:${PORT}`);
-    console.log(`  AI API:    http://localhost:${PORT}/v1/`);
-    console.log(`  Admin API: http://localhost:${PORT}/api/`);
+  serve({ fetch: app.fetch, hostname: "0.0.0.0", port: PORT }, () => {
+    console.log(`[llm-rate-gate] listening on http://0.0.0.0:${PORT}`);
+    console.log(`  AI API:    http://0.0.0.0:${PORT}/v1/`);
+    console.log(`  Admin API: http://0.0.0.0:${PORT}/api/`);
   });
 }
 
