@@ -12,6 +12,7 @@ import {
   testUpstreamKey,
   chatTestUpstreamKey,
   createGateKey,
+  updateGateKey,
   deleteGateKey,
   type Provider,
   type BuiltinProvider,
@@ -646,14 +647,43 @@ export function App() {
                         </code>
                       </td>
                       <td>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                           {gk.upstream_key_ids.length === 0 && (
                             <span style={{ color: "var(--text-dim)", fontSize: 12 }}>未关联</span>
                           )}
-                          {gk.upstream_key_ids.map((ukId) => (
-                            <span key={ukId} className="badge badge-success" style={{ fontSize: 11 }}>
-                              {upstreamKeyLabel(ukId)}
-                            </span>
+                          {gk.upstream_key_ids.map((ukId, idx) => (
+                            <div key={ukId} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <span style={{ fontSize: 10, color: "var(--text-dim)", width: 16, textAlign: "center" }}>{idx + 1}</span>
+                              <span className="badge badge-success" style={{ fontSize: 11 }}>
+                                {upstreamKeyLabel(ukId)}
+                              </span>
+                              {gk.upstream_key_ids.length > 1 && (
+                                <>
+                                  <button
+                                    className="btn-outline btn-sm"
+                                    style={{ padding: "1px 4px", fontSize: 10, lineHeight: 1 }}
+                                    disabled={idx === 0}
+                                    onClick={async () => {
+                                      const ids = [...gk.upstream_key_ids];
+                                      [ids[idx - 1], ids[idx]] = [ids[idx], ids[idx - 1]];
+                                      await updateGateKey(gk.id, { upstream_key_ids: ids });
+                                      reload();
+                                    }}
+                                  >↑</button>
+                                  <button
+                                    className="btn-outline btn-sm"
+                                    style={{ padding: "1px 4px", fontSize: 10, lineHeight: 1 }}
+                                    disabled={idx === gk.upstream_key_ids.length - 1}
+                                    onClick={async () => {
+                                      const ids = [...gk.upstream_key_ids];
+                                      [ids[idx], ids[idx + 1]] = [ids[idx + 1], ids[idx]];
+                                      await updateGateKey(gk.id, { upstream_key_ids: ids });
+                                      reload();
+                                    }}
+                                  >↓</button>
+                                </>
+                              )}
+                            </div>
                           ))}
                         </div>
                       </td>
@@ -685,7 +715,7 @@ export function App() {
             {keys.length > 0 && (
               <div style={{ marginBottom: 8 }}>
                 <label style={{ fontSize: 12, color: "var(--text-dim)", display: "block", marginBottom: 6 }}>
-                  选择可路由的上游 Key Pool
+                  选择可路由的上游 Key Pool（点击添加，顺序即优先级）
                 </label>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {keys.map((uk) => {
@@ -702,6 +732,41 @@ export function App() {
                     );
                   })}
                 </div>
+                {gkSelectedKeys.length > 1 && (
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ fontSize: 12, color: "var(--text-dim)", display: "block", marginBottom: 4 }}>
+                      优先级排序（上方优先）
+                    </label>
+                    {gkSelectedKeys.map((ukId, idx) => (
+                      <div key={ukId} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <span style={{ fontSize: 12, color: "var(--text-dim)", width: 20, textAlign: "center" }}>{idx + 1}</span>
+                        <span style={{ fontSize: 13, flex: 1 }}>{upstreamKeyLabel(ukId)}</span>
+                        <button
+                          className="btn-outline btn-sm"
+                          style={{ padding: "2px 6px", fontSize: 11 }}
+                          disabled={idx === 0}
+                          onClick={() => setGkSelectedKeys(prev => {
+                            const a = [...prev];
+                            [a[idx - 1], a[idx]] = [a[idx], a[idx - 1]];
+                            return a;
+                          })}
+                          type="button"
+                        >↑</button>
+                        <button
+                          className="btn-outline btn-sm"
+                          style={{ padding: "2px 6px", fontSize: 11 }}
+                          disabled={idx === gkSelectedKeys.length - 1}
+                          onClick={() => setGkSelectedKeys(prev => {
+                            const a = [...prev];
+                            [a[idx], a[idx + 1]] = [a[idx + 1], a[idx]];
+                            return a;
+                          })}
+                          type="button"
+                        >↓</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {gkFormatError && (
                   <p style={{ fontSize: 12, color: "var(--danger)", margin: "6px 0 0" }}>{gkFormatError}</p>
                 )}

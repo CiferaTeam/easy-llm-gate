@@ -13,6 +13,7 @@ import {
   getGateKeys,
   addGateKey,
   deleteGateKey,
+  updateGateKeyUpstreamKeys,
   maskKey,
 } from "../store.js";
 import { builtinProviders } from "../builtin-providers.js";
@@ -268,6 +269,16 @@ admin.post("/gate-keys", async (c) => {
     upstream_key_ids: body.upstream_key_ids,
   });
   return c.json(gk, 201);
+});
+
+admin.put("/gate-keys/:id", async (c) => {
+  const body = await c.req.json();
+  if (!Array.isArray(body.upstream_key_ids)) {
+    return c.json({ error: "upstream_key_ids array is required" }, 400);
+  }
+  const updated = await updateGateKeyUpstreamKeys(c.req.param("id"), body.upstream_key_ids);
+  if (!updated) return c.json({ error: "not found" }, 404);
+  return c.json(updated);
 });
 
 admin.delete("/gate-keys/:id", async (c) => {

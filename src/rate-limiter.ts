@@ -91,6 +91,12 @@ function canAcquire(b: BucketState): boolean {
   return true;
 }
 
+/** Check if an upstream key can accept a request right now (without consuming). */
+export function canAcquireForKey(upstreamKeyId: string, rpmLimit: number, tpmLimit: number): boolean {
+  const b = getOrCreateBucket(upstreamKeyId, rpmLimit, tpmLimit);
+  return canAcquire(b);
+}
+
 // ── Public API ──
 
 export function generateRequestId(): string {

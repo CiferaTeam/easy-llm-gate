@@ -138,6 +138,19 @@ export async function createGateKey(data: {
   return r.json();
 }
 
+export async function updateGateKey(
+  id: string,
+  data: { upstream_key_ids: string[] }
+): Promise<GateKey> {
+  const r = await fetch(`/api/gate-keys/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function deleteGateKey(id: string): Promise<void> {
   const r = await fetch(`/api/gate-keys/${id}`, { method: "DELETE" });
   if (!r.ok) throw new Error(await r.text());

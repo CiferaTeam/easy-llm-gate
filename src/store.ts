@@ -1,5 +1,6 @@
 import { db } from "./db.js";
 import { builtinProviders, getBuiltinProvider, type BuiltinProvider } from "./builtin-providers.js";
+import { canAcquireForKey } from "./rate-limiter.js";
 
 // ── Interfaces ──
 
@@ -349,6 +350,17 @@ export async function deleteGateKey(id: string): Promise<boolean> {
   return result.changes > 0;
 }
 
+export async function updateGateKeyUpstreamKeys(
+  id: string,
+  upstream_key_ids: string[]
+): Promise<GateKey | null> {
+  const row = stmts.getGateKey.get(id);
+  if (!row) return null;
+  stmts.updateGateKeyUpstreamIds.run(JSON.stringify(upstream_key_ids), id);
+  const updated = stmts.getGateKey.get(id);
+  return updated ? rowToGateKey(updated) : null;
+}
+
 // ── Proxy Helpers ──
 
 export async function authenticateGateKey(apiKey: string): Promise<GateKey | null> {
@@ -362,6 +374,9 @@ export async function findUpstreamForGateKey(
   gateKey: GateKey,
   providerType?: Provider["type"]
 ): Promise<{ key: UpstreamKey; provider: Provider } | null> {
+  // First eligible match (for fallback if all are throttled)
+  let firstEligible: { key: UpstreamKey; provider: Provider } | null = null;
+
   for (const ukId of gateKey.upstream_key_ids) {
     const ukRow = stmts.getUpstreamKey.get(ukId);
     if (!ukRow) continue;
@@ -370,9 +385,17 @@ export async function findUpstreamForGateKey(
     const provider = await getProvider(uk.provider_id);
     if (!provider) continue;
     if (providerType && provider.type !== providerType) continue;
-    return { key: uk, provider };
+
+    if (!firstEligible) firstEligible = { key: uk, provider };
+
+    // Check if this key has rate limit capacity
+    if (canAcquireForKey(uk.id, uk.rpm_limit ?? 60, uk.tpm_limit ?? 100000)) {
+      return { key: uk, provider };
+    }
   }
-  return null;
+
+  // All keys throttled — fall back to first eligible (will queue there)
+  return firstEligible;
 }
 
 // Legacy: find any available key (no gate key auth)
